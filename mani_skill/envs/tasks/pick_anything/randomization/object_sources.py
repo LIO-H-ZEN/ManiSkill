@@ -138,12 +138,12 @@ class InternDataAssetsSource(ObjectSource):
 
     * lazily lists candidate object instances via the HF tree API (cached to a
       local JSON so we don't hit the network every reset);
-    * downloads only the mesh files for a sampled instance
-      (``Aligned.obj`` + ``Aligned.mtl`` + ``textures/``) on first use and caches
-      them under ``ASSET_DIR/intern_data_assets/...``;
-    * normalizes scale so the object's max extent fits ``target_extent`` (so a
-      Panda gripper can actually grasp it), and builds it with a convex-decomposed
-      (VHACD) collision mesh.
+    * downloads every file for a sampled instance (except the large grasp
+      ``.npz``/``.npy`` and sim ``.png``) on first use and caches them under
+      ``ASSET_DIR/intern_data_assets/...``;
+    * uses the object's **real-world size** (the meshes are in millimeters, so
+      a Rubik's cube is ~5.7 cm) --- no rescaling/clamping --- and builds it
+      with a convex-decomposed (VHACD) collision mesh.
 
     If the repo is not accessible (no token / license not accepted),
     :meth:`build_actor` raises a ``RuntimeError`` with the exact steps to fix it.
@@ -161,21 +161,25 @@ class InternDataAssetsSource(ObjectSource):
     def __init__(
         self,
         categories: Optional[list[str]] = None,
-        target_extent: float = 0.05,
         scale: Optional[float] = None,
+        unit: str = "mm",
     ):
         """
         Args:
             categories: restrict sampling to these category dirs (e.g.
                 ``["omniobject3d-banana", "google_scan-book"]``). ``None`` means
                 sample across all categories discovered via the HF tree API.
-            target_extent: rescale each object so its max XY extent equals this
-                (meters), making it graspable. Ignored if ``scale`` is set.
-            scale: fixed uniform scale; if given, overrides ``target_extent``.
+            scale: fixed uniform scale; if given, overrides the unit conversion.
+                Otherwise objects are built at their **real-world size** (no
+                rescaling/clamping).
+            unit: native unit of the dataset meshes. The InternDataAssets
+                pre-train-pick meshes are in **millimeters** (a Rubik's cube is
+                ~57 units = 5.7 cm), so the default ``"mm"`` yields real-world
+                sizes. One of ``"mm"``, ``"cm"``, ``"m"``.
         """
         self.categories = categories
-        self.target_extent = target_extent
         self.scale = scale
+        self.unit_scale = {"mm": 0.001, "cm": 0.01, "m": 1.0}[unit]
         # category -> np.array of instance ids; populated lazily.
         self._instances: dict[str, np.ndarray] = {}
 
@@ -340,17 +344,14 @@ class InternDataAssetsSource(ObjectSource):
         marker.touch()
         return str(obj_path)
 
-    # -- scale normalization ------------------------------------------------- #
+    # -- scale -------------------------------------------------------------- #
     def _resolve_scale(self, obj_path: str) -> float:
+        # Real-world size only: the meshes are in millimeters, so convert to
+        # meters and do NOT rescale/clamp --- objects keep their true dimensions.
+        # Pass a fixed ``scale`` to the constructor to grow/shrink uniformly.
         if self.scale is not None:
             return float(self.scale)
-        import trimesh
-
-        mesh = trimesh.load(obj_path, force="mesh", process=False)
-        extent = float(np.max(mesh.bounding_box.extents))
-        if extent <= 0:
-            return 1.0
-        return self.target_extent / extent
+        return self.unit_scale
 
     # -- build --------------------------------------------------------------- #
     def build_actor(self, env, env_idx: int, rng: np.random.RandomState) -> Actor:
