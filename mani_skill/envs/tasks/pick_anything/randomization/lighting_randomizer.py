@@ -10,11 +10,13 @@ reconfigure). v3 will plug in InternDataAssets' 87-image ``envmap_lib``.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
 
 import mani_skill
+from mani_skill.utils.logging_utils import logger
 
 from .base import Randomizer
 
@@ -45,7 +47,20 @@ class HDRILightingRandomizer(Randomizer):
     """
 
     def __init__(self, hdri_files: list[str] | None = None):
-        self.hdri_files = list(hdri_files) if hdri_files else _default_hdri_files()
+        # None -> ship defaults; an explicit [] disables HDRI randomization.
+        self.hdri_files = (
+            _default_hdri_files() if hdri_files is None else list(hdri_files)
+        )
+        if self.hdri_files and sys.platform == "darwin":
+            # SAPIEN's environment-map path renders incorrectly under MoltenVK
+            # (observed on Apple Silicon, sapien 3.0.3): the decoded HDR floods
+            # the scene with green IBL. Skip the env map entirely on macOS.
+            logger.warning(
+                "HDRILightingRandomizer: set_environment_map is broken on macOS "
+                "(MoltenVK) and tints the whole scene green; disabling HDRI "
+                "randomization. Pass hdri_files=[] to silence this warning."
+            )
+            self.hdri_files = []
 
     def on_reconfigure(self, env, options: dict) -> None:
         rng = env._batched_episode_rng
