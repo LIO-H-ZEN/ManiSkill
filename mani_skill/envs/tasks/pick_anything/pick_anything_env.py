@@ -1,0 +1,196 @@
+"""PickAnything: a pick task with composable domain randomization.
+
+The task itself is the same as PickCube / PickSingleYCB (grasp an object and
+move it to a goal position), but every diversity axis --- object, table,
+lighting --- is delegated to a pluggable :class:`Randomizer`. v1 ships
+procedural randomizers (no asset download); later versions swap in YCB and
+InternDataAssets behind the same interface.
+
+**Randomizations:**
+- object geometry (random box half-size) and color --- per reconfiguration
+- table surface color --- per reconfiguration
+- HDRI environment map --- per episode (cheap, render-time)
+- ambient + directional light direction/intensity --- per reconfiguration
+- object xy position + yaw, goal position --- per episode
+- robot init qpos noise --- per episode
+
+**Success Conditions:**
+- the object position is within ``goal_thresh`` (default 0.025m) of the goal
+- the robot is static (q velocity < 0.2)
+"""
+
+from typing import Any, Union
+
+import numpy as np
+import sapien
+import torch
+
+from mani_skill.agents.robots import Panda
+from mani_skill.envs.sapien_env import BaseEnv
+from mani_skill.sensors.camera import CameraConfig
+from mani_skill.utils import sapien_utils
+from mani_skill.utils.registration import register_env
+from mani_skill.utils.structs.pose import Pose
+
+from .randomization import (
+    HDRILightingRandomizer,
+    ProceduralObjectRandomizer,
+    ProceduralTableRandomizer,
+    Randomizer,
+)
+
+
+@register_env("PickAnything-v1", max_episode_steps=50)
+class PickAnythingEnv(BaseEnv):
+    SUPPORTED_ROBOTS = ["panda"]
+    agent: Panda
+    goal_thresh = 0.025
+
+    def __init__(
+        self,
+        *args,
+        robot_uids: str = "panda",
+        robot_init_qpos_noise: float = 0.02,
+        num_envs: int = 1,
+        reconfiguration_freq=None,
+        object_randomizer: Randomizer | None = None,
+        table_randomizer: Randomizer | None = None,
+        lighting_randomizer: Randomizer | None = None,
+        **kwargs,
+    ):
+        self.robot_init_qpos_noise = robot_init_qpos_noise
+        # build randomizers before super().__init__ (they only hold config; they
+        # touch the env later via their hooks)
+        self.object_randomizer = object_randomizer or ProceduralObjectRandomizer(
+            goal_thresh=self.goal_thresh
+        )
+        self.table_randomizer = table_randomizer or ProceduralTableRandomizer()
+        self.lighting_randomizer = lighting_randomizer or HDRILightingRandomizer()
+        if reconfiguration_freq is None:
+            # single env: reconfigure (and thus re-randomize geometry) every
+            # episode. many envs: opt-in via reconfiguration_freq>=1.
+            reconfiguration_freq = 1 if num_envs == 1 else 0
+        super().__init__(
+            *args,
+            robot_uids=robot_uids,
+            num_envs=num_envs,
+            reconfiguration_freq=reconfiguration_freq,
+            **kwargs,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Sensors
+    # ------------------------------------------------------------------ #
+    @property
+    def _default_sensor_configs(self):
+        pose = sapien_utils.look_at(eye=[0.3, 0, 0.6], target=[-0.1, 0, 0.1])
+        return [CameraConfig("base_camera", pose, 128, 128, np.pi / 2, 0.01, 100)]
+
+    @property
+    def _default_human_render_camera_configs(self):
+        pose = sapien_utils.look_at(eye=[0.6, 0.7, 0.6], target=[0.0, 0.0, 0.35])
+        return CameraConfig("render_camera", pose, 512, 512, 1, 0.01, 100)
+
+    def _load_agent(self, options: dict):
+        super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
+
+    # ------------------------------------------------------------------ #
+    # Scene / lighting / episode lifecycle (delegated to randomizers)
+    # ------------------------------------------------------------------ #
+    def _load_scene(self, options: dict):
+        self.table_randomizer.on_reconfigure(self, options)
+        self.object_randomizer.on_reconfigure(self, options)
+
+    def _load_lighting(self, options: dict):
+        self.lighting_randomizer.on_reconfigure(self, options)
+
+    def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
+        self.table_randomizer.on_initialize_episode(self, env_idx, options)
+        self.object_randomizer.on_initialize_episode(self, env_idx, options)
+        self.lighting_randomizer.on_initialize_episode(self, env_idx, options)
+
+        if self.robot_uids == "panda":
+            qpos = np.array(
+                [
+                    0.0,
+                    np.pi / 8,
+                    0,
+                    -np.pi * 5 / 8,
+                    0,
+                    np.pi * 3 / 4,
+                    np.pi / 4,
+                    0.04,
+                    0.04,
+                ]
+            )
+            b = len(env_idx)
+            qpos = (
+                self._episode_rng.normal(
+                    0, self.robot_init_qpos_noise, (b, len(qpos))
+                )
+                + qpos
+            )
+            qpos[:, -2:] = 0.04
+            self.agent.reset(qpos)
+            self.agent.robot.set_pose(sapien.Pose([-0.615, 0, 0]))
+
+    # ------------------------------------------------------------------ #
+    # Task logic (same as PickCube / PickSingleYCB)
+    # ------------------------------------------------------------------ #
+    def evaluate(self):
+        is_obj_placed = (
+            torch.linalg.norm(self.goal_site.pose.p - self.obj.pose.p, axis=1)
+            <= self.goal_thresh
+        )
+        is_grasped = self.agent.is_grasping(self.obj)
+        is_robot_static = self.agent.is_static(0.2)
+        return {
+            "success": is_obj_placed & is_robot_static,
+            "is_obj_placed": is_obj_placed,
+            "is_robot_static": is_robot_static,
+            "is_grasped": is_grasped,
+        }
+
+    def _get_obs_extra(self, info: dict):
+        obs = dict(
+            is_grasped=info["is_grasped"],
+            tcp_pose=self.agent.tcp_pose.raw_pose,
+            goal_pos=self.goal_site.pose.p,
+        )
+        if "state" in self.obs_mode:
+            obs.update(
+                obj_pose=self.obj.pose.raw_pose,
+                tcp_to_obj_pos=self.obj.pose.p - self.agent.tcp_pose.p,
+                obj_to_goal_pos=self.goal_site.pose.p - self.obj.pose.p,
+            )
+        return obs
+
+    def compute_dense_reward(self, obs: Any, action: torch.Tensor, info: dict):
+        tcp_to_obj_dist = torch.linalg.norm(
+            self.obj.pose.p - self.agent.tcp_pose.p, axis=1
+        )
+        reaching_reward = 1 - torch.tanh(5 * tcp_to_obj_dist)
+        reward = reaching_reward
+
+        is_grasped = info["is_grasped"]
+        reward += is_grasped
+
+        obj_to_goal_dist = torch.linalg.norm(
+            self.goal_site.pose.p - self.obj.pose.p, axis=1
+        )
+        place_reward = 1 - torch.tanh(5 * obj_to_goal_dist)
+        reward += place_reward * is_grasped
+
+        qvel = self.agent.robot.get_qvel()
+        if self.robot_uids in ["panda", "widowxai"]:
+            qvel = qvel[..., :-2]
+        static_reward = 1 - torch.tanh(5 * torch.linalg.norm(qvel, axis=1))
+        reward += static_reward * info["is_obj_placed"]
+
+        reward[info["success"]] = 5
+        return reward
+
+    def compute_normalized_dense_reward(
+        self, obs: Any, action: torch.Tensor, info: dict
+    ):
+        return self.compute_dense_reward(obs=obs, action=action, info=info) / 5

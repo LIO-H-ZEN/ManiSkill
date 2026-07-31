@@ -6,6 +6,7 @@ from .empty_env import EmptyEnv
 from .fmb import *
 from .humanoid import *
 from .mobile_manipulation import *
+from .pick_anything import *
 from .quadruped import *
 from .rotate_cube import RotateCubeEnv
 from .tabletop import *
