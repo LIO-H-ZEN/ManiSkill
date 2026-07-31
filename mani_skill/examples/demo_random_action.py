@@ -55,6 +55,14 @@ class Args:
     seed: Annotated[Optional[Union[int, list[int]]], tyro.conf.arg(aliases=["-s"])] = None
     """Seed(s) for random actions and simulator. Can be a single integer or a list of integers. Default is None (no seeds)"""
 
+    object_sources: Optional[List[str]] = None
+    """PickAnything only: object source aliases to mix each reconfigure, e.g.
+    `--object-sources cube ycb` or `--object-sources cube ycb interndata`.
+    Valid: cube, ycb, interndata. Defaults to the env default (cube+ycb).
+    interndata downloads meshes on demand from a gated HF dataset
+    (InternRobotics/InternData-A1); needs `huggingface-cli login` + license
+    acceptance."""
+
 def main(args: Args):
     if args.render_mode == "none":
         args.render_mode = None
@@ -88,6 +96,8 @@ def main(args: Args):
         env_kwargs["robot_uids"] = tuple(args.robot_uids.split(","))
         if len(env_kwargs["robot_uids"]) == 1:
             env_kwargs["robot_uids"] = env_kwargs["robot_uids"][0]
+    if args.object_sources is not None:
+        env_kwargs["object_sources"] = args.object_sources
     env: BaseEnv = gym.make(
         args.env_id,
         **env_kwargs

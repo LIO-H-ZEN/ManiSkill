@@ -15,7 +15,13 @@ cheaply:
   where cheap, render-time / pose changes go: HDRI environment map, light
   parameters, object pose, goal pose. These do not need a PhysX rebuild.
 
-Keeping the two hooks separate is what later (v4) lets us turn the
+* ``on_after_reconfigure`` runs once per reconfiguration, immediately after
+  ``_load_scene`` finishes and the GPU/scene is live. Use it for things that
+  need the built actors to exist but must happen before the first episode
+  initializes --- e.g. measuring each object's resting height from its collision
+  mesh so spawn poses put it flat on the table.
+
+Keeping the hooks separate is what later (v4) lets us turn the
 ``on_reconfigure`` part into a scene-provided "placement contract" and run pick
 in arbitrary scenes.
 """
@@ -33,7 +39,7 @@ if TYPE_CHECKING:
 class Randomizer:
     """Base class for a domain-randomization axis.
 
-    Subclasses override one or both hooks. ``env`` is the owning
+    Subclasses override one or more hooks. ``env`` is the owning
     ``PickAnythingEnv``; randomizers read from it (``env.scene``,
     ``env._batched_episode_rng``, ``env.num_envs``) and write results back as
     attributes on it (e.g. ``env.obj``, ``env.table``) so the env's task logic
@@ -46,6 +52,15 @@ class Randomizer:
         Use for anything that needs the scene graph rebuilt: object geometry,
         table model / material, fixed lighting. Runs once per reconfiguration,
         not per episode.
+        """
+        pass
+
+    def on_after_reconfigure(self, env: "PickAnythingEnv", options: dict) -> None:
+        """Called once right after ``_load_scene``, with the scene live.
+
+        Use for post-build measurement that the first episode init depends on
+        (e.g. object resting heights from collision meshes). The episode RNG is
+        seeded here. Runs once per reconfiguration, not per episode.
         """
         pass
 

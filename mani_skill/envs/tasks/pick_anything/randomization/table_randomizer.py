@@ -18,8 +18,39 @@ from __future__ import annotations
 import sapien
 
 from mani_skill.utils.building.ground import build_ground
+from mani_skill.utils.scene_builder.table import TableSceneBuilder
 
 from .base import Randomizer
+
+
+class WoodTableRandomizer(Randomizer):
+    """The fixed wood PickCube table, via :class:`TableSceneBuilder`.
+
+    This is the faithful PickCube surface: ``table.glb`` scaled so the top sits
+    at z=0, plus the robot-init-qpos logic that ``TableSceneBuilder.initialize``
+    owns. ``on_initialize_episode`` delegates to ``table_scene.initialize`` ---
+    which sets the table pose **and** resets the robot --- so the env itself does
+    not need separate robot-init code.
+
+    The wood texture is fixed (PBR swap is the procedural randomizer below /
+    a future texture step); this randomizer is about giving PickAnything the
+    same realistic wood table PickCube has.
+    """
+
+    def __init__(self, robot_init_qpos_noise: float = 0.02):
+        self.robot_init_qpos_noise = robot_init_qpos_noise
+
+    def on_reconfigure(self, env, options: dict) -> None:
+        env.table_scene = TableSceneBuilder(
+            env, robot_init_qpos_noise=self.robot_init_qpos_noise
+        )
+        env.table_scene.build()
+        env.table = env.table_scene.table
+
+    def on_initialize_episode(self, env, env_idx, options: dict) -> None:
+        # sets table pose + robot init qpos/pose (PickCube behavior)
+        env.table_scene.initialize(env_idx)
+
 
 # PBR parameter ranges per material type. metal = high metallic, low roughness;
 # glossy = low metallic, low roughness (shiny plastic/lacquer); matte = low

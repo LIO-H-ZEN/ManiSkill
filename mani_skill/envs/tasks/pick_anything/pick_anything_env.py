@@ -2,14 +2,24 @@
 
 The task itself is the same as PickCube / PickSingleYCB (grasp an object and
 move it to a goal position), but every diversity axis --- object, table,
-lighting --- is delegated to a pluggable :class:`Randomizer`. v1 ships
-procedural randomizers (no asset download); later versions swap in YCB and
-InternDataAssets behind the same interface.
+lighting --- is delegated to a pluggable :class:`Randomizer`.
+
+**Defaults (v1):**
+- table: the fixed wood PickCube table (``TableSceneBuilder``)
+- object: a composite source randomizer mixing the procedural **cube** and the
+  cached **YCB** dataset; one source is drawn per env per reconfiguration
+- lighting: HDRI environment map + ambient/directional light (HDRI is auto
+  disabled on macOS due to a MoltenVK bug; see ``HDRILightingRandomizer``)
+
+Swap any axis by passing a custom ``object_randomizer`` / ``table_randomizer``
+/ ``lighting_randomizer``, or grow the object candidate set via
+``object_sources`` (e.g. ``["cube", "ycb", "interndata"]`` --- InternDataAssets
+meshes are downloaded on demand from a gated HF dataset).
 
 **Randomizations:**
-- object geometry (random box half-size) and color --- per reconfiguration
-- table surface color --- per reconfiguration
-- HDRI environment map --- per episode (cheap, render-time)
+- object identity (cube / YCB / mesh) + geometry/color --- per reconfiguration
+- table model/material --- per reconfiguration (wood by default)
+- HDRI environment map --- per episode (cheap, render-time; off on macOS)
 - ambient + directional light direction/intensity --- per reconfiguration
 - object xy position + yaw, goal position --- per episode
 - robot init qpos noise --- per episode
@@ -19,7 +29,7 @@ InternDataAssets behind the same interface.
 - the robot is static (q velocity < 0.2)
 """
 
-from typing import Any, Union
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 import sapien
@@ -34,10 +44,11 @@ from mani_skill.utils.structs.pose import Pose
 
 from .randomization import (
     HDRILightingRandomizer,
-    ProceduralObjectRandomizer,
-    ProceduralTableRandomizer,
+    ObjectSource,
     Randomizer,
 )
+from .randomization.object_randomizer import CompositeObjectRandomizer
+from .randomization.table_randomizer import WoodTableRandomizer
 
 
 @register_env("PickAnything-v1", max_episode_steps=50)
@@ -53,18 +64,27 @@ class PickAnythingEnv(BaseEnv):
         robot_init_qpos_noise: float = 0.02,
         num_envs: int = 1,
         reconfiguration_freq=None,
-        object_randomizer: Randomizer | None = None,
-        table_randomizer: Randomizer | None = None,
-        lighting_randomizer: Randomizer | None = None,
+        object_sources: Optional[Sequence[Union[ObjectSource, str]]] = None,
+        object_randomizer: Optional[Randomizer] = None,
+        table_randomizer: Optional[Randomizer] = None,
+        lighting_randomizer: Optional[Randomizer] = None,
         **kwargs,
     ):
         self.robot_init_qpos_noise = robot_init_qpos_noise
         # build randomizers before super().__init__ (they only hold config; they
-        # touch the env later via their hooks)
-        self.object_randomizer = object_randomizer or ProceduralObjectRandomizer(
-            goal_thresh=self.goal_thresh
+        # touch the env later via their hooks).
+        if object_randomizer is not None:
+            self.object_randomizer = object_randomizer
+        else:
+            # default candidate set: procedural cube + cached YCB. Add
+            # "interndata" to opt into downloaded mesh objects (gated HF repo).
+            sources = list(object_sources) if object_sources else ["cube", "ycb"]
+            self.object_randomizer = CompositeObjectRandomizer(
+                sources, goal_thresh=self.goal_thresh
+            )
+        self.table_randomizer = table_randomizer or WoodTableRandomizer(
+            robot_init_qpos_noise=robot_init_qpos_noise
         )
-        self.table_randomizer = table_randomizer or ProceduralTableRandomizer()
         self.lighting_randomizer = lighting_randomizer or HDRILightingRandomizer()
         if reconfiguration_freq is None:
             # single env: reconfigure (and thus re-randomize geometry) every
@@ -103,6 +123,13 @@ class PickAnythingEnv(BaseEnv):
 
     def _load_lighting(self, options: dict):
         self.lighting_randomizer.on_reconfigure(self, options)
+
+    def _after_reconfigure(self, options: dict):
+        # post-build measurement (e.g. object resting heights from collision
+        # meshes) before the first episode initializes.
+        self.table_randomizer.on_after_reconfigure(self, options)
+        self.object_randomizer.on_after_reconfigure(self, options)
+        self.lighting_randomizer.on_after_reconfigure(self, options)
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         self.table_randomizer.on_initialize_episode(self, env_idx, options)

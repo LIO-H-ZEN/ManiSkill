@@ -1,11 +1,30 @@
 from .base import Randomizer
 from .lighting_randomizer import HDRILightingRandomizer
-from .object_randomizer import ProceduralObjectRandomizer
-from .table_randomizer import ProceduralTableRandomizer
+from .object_randomizer import CompositeObjectRandomizer, ProceduralObjectRandomizer
+from .object_sources import (
+    CubeSource,
+    InternDataAssetsSource,
+    ObjectSource,
+    SOURCE_ALIASES,
+    YCBSource,
+    resolve_object_source,
+)
+from .table_randomizer import ProceduralTableRandomizer, WoodTableRandomizer
 
 __all__ = [
     "Randomizer",
+    # objects
+    "ObjectSource",
+    "CubeSource",
+    "YCBSource",
+    "InternDataAssetsSource",
+    "SOURCE_ALIASES",
+    "resolve_object_source",
+    "CompositeObjectRandomizer",
     "ProceduralObjectRandomizer",
+    # table
+    "WoodTableRandomizer",
     "ProceduralTableRandomizer",
+    # lighting
     "HDRILightingRandomizer",
 ]
