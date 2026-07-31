@@ -24,7 +24,7 @@ class Args:
     rgb: bool = False
     """Also render one RGB camera frame per episode to confirm rendering works."""
     num_episodes: int = 6
-    sources: list[str] = field(default_factory=lambda: ["cube", "ycb"])
+    sources: list[str] = field(default_factory=lambda: ["cube", "ycb", "interndata"])
     """Object source aliases to mix (cube / ycb / interndata)."""
     seed: int = 123
 

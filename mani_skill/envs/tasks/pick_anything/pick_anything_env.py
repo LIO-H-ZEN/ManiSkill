@@ -6,8 +6,11 @@ lighting --- is delegated to a pluggable :class:`Randomizer`.
 
 **Defaults (v1):**
 - table: the fixed wood PickCube table (``TableSceneBuilder``)
-- object: a composite source randomizer mixing the procedural **cube** and the
-  cached **YCB** dataset; one source is drawn per env per reconfiguration
+- object: a composite source randomizer mixing **cube** (procedural), **YCB**
+  (cached dataset), and **InternDataAssets** (downloaded meshes); one source is
+  drawn per env per reconfiguration. InternDataAssets is a gated HF dataset
+  (needs ``huggingface-cli login`` + license acceptance); pass
+  ``object_sources=["cube","ycb"]`` for a no-download default.
 - lighting: HDRI environment map + ambient/directional light (HDRI is auto
   disabled on macOS due to a MoltenVK bug; see ``HDRILightingRandomizer``)
 
@@ -76,9 +79,15 @@ class PickAnythingEnv(BaseEnv):
         if object_randomizer is not None:
             self.object_randomizer = object_randomizer
         else:
-            # default candidate set: procedural cube + cached YCB. Add
-            # "interndata" to opt into downloaded mesh objects (gated HF repo).
-            sources = list(object_sources) if object_sources else ["cube", "ycb"]
+            # default candidate set: procedural cube + cached YCB + InternDataAssets
+            # meshes. interndata is a gated HF dataset --- it needs
+            # `huggingface-cli login` + license acceptance and downloads meshes on
+            # first use; pass object_sources=["cube","ycb"] for a no-download default.
+            sources = list(object_sources) if object_sources else [
+                "cube",
+                "ycb",
+                "interndata",
+            ]
             self.object_randomizer = CompositeObjectRandomizer(
                 sources, goal_thresh=self.goal_thresh
             )

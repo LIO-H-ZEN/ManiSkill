@@ -58,8 +58,8 @@ class Args:
     object_sources: Optional[List[str]] = None
     """PickAnything only: object source aliases to mix each reconfigure, e.g.
     `--object-sources cube ycb` or `--object-sources cube ycb interndata`.
-    Valid: cube, ycb, interndata. Defaults to the env default (cube+ycb).
-    interndata downloads meshes on demand from a gated HF dataset
+    Valid: cube, ycb, interndata. Defaults to the env default (cube+ycb+
+    interndata). interndata downloads meshes on demand from a gated HF dataset
     (InternRobotics/InternData-A1); needs `huggingface-cli login` + license
     acceptance."""
 
