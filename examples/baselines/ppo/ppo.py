@@ -3,7 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -71,6 +71,11 @@ class Args:
     """for benchmarking purposes we want to reconfigure the eval environment each reset to ensure objects are randomized in some tasks"""
     control_mode: Optional[str] = "pd_joint_delta_pos"
     """the control mode to use for the environment"""
+    object_sources: Optional[List[str]] = None
+    """PickAnything only: object source aliases to mix each reconfigure
+    (cube/ycb/interndata). None uses the env default. Pass e.g.
+    `--object-sources cube ycb` to skip InternDataAssets mesh downloads during
+    large-batch training."""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.8
@@ -195,6 +200,8 @@ if __name__ == "__main__":
     env_kwargs = dict(obs_mode="state", render_mode="rgb_array", sim_backend="physx_cuda")
     if args.control_mode is not None:
         env_kwargs["control_mode"] = args.control_mode
+    if args.object_sources is not None:
+        env_kwargs["object_sources"] = args.object_sources
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
     if isinstance(envs.action_space, gym.spaces.Dict):
