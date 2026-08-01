@@ -15,12 +15,15 @@ runs the interndata source is fully offline.
 Requirements:
   - ``huggingface-cli login`` + accept the license at
     https://huggingface.co/datasets/InternRobotics/InternData-A1
-  - if behind a proxy: ``export https_proxy=http://... http_proxy=http://...``
-    (do NOT use ``all_proxy=socks5://`` --- huggingface_hub/httpx needs the
-    ``socksio`` package for SOCKS).
+  - proxy: only if the machine can't reach HF directly. ``export
+    https_proxy=http://... http_proxy=http://...`` (HTTP only, NOT
+    ``all_proxy=socks5://``). If `curl -sI https://huggingface.co` works with no
+    proxy, run this with no proxy set.
 
-Re-runnable: ``hf_hub_download`` skips already-cached files, and instances
-already marked ``.complete`` are skipped. So just re-run if it gets interrupted.
+Progress: a global per-object bar shows done / total / remaining / failed.
+Listing is done per-category (with retry) so a flaky connection retries a small
+call instead of the whole tree. Re-runnable: cached files and ``.complete``
+instances are skipped.
 
 Usage:
     python -m mani_skill.examples.download_pick_anything_interndata
@@ -32,6 +35,7 @@ Usage:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -45,10 +49,13 @@ class Args:
     """Restrict to these category dirs; empty = all categories (~106)."""
 
     max_workers: int = 8
-    """Parallel download threads."""
+    """Parallel download threads (one object per task)."""
 
     dry_run: bool = False
     """List what would be downloaded (with a size estimate) without downloading."""
+
+    retries: int = 5
+    """Retries per network call (listing + each file download)."""
 
 
 # Per-instance files the env actually reads. Everything else under an instance
@@ -58,15 +65,26 @@ _TEXTURES_DIR = "textures"
 
 
 def _is_keep(path: str) -> bool:
-    """True for Aligned.obj / Aligned.mtl / anything under textures/."""
     base = path.split("/")[-1]
     if base in _KEEP_FILES:
         return True
     return f"/{_TEXTURES_DIR}/" in path
 
 
+def _retry(fn, *, attempts: int, what: str):
+    last = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:  # network/SSL/timeout etc.
+            last = e
+            if i < attempts - 1:
+                time.sleep(2 * (i + 1))
+    raise RuntimeError(f"{what} failed after {attempts} attempts: {last}") from last
+
+
 def main(args: Args):
-    from huggingface_hub import HfApi, RepoFile, hf_hub_download
+    from huggingface_hub import HfApi, RepoFile, RepoFolder, hf_hub_download
 
     from mani_skill.envs.tasks.pick_anything.randomization.object_sources import (
         InternDataAssetsSource,
@@ -79,126 +97,136 @@ def main(args: Args):
 
     only_cats = set(args.categories) if args.categories else None
 
-    # 1. One recursive list of the whole pre-train-pick/assets tree.
-    print(f"Listing files under {PREFIX} ...")
-    files: list[str] = []  # repo-relative paths to download
-    cat_to_instances: dict[str, set[str]] = {}  # category -> {instance, ...}
-    total_bytes = 0
-    listed = 0
-    for e in tqdm(
-        api.list_repo_tree(
-            repo_id=src.HF_REPO,
-            repo_type=src.HF_REPO_TYPE,
-            path_in_repo=PREFIX,
-            recursive=True,
-        ),
-        desc="listing",
-        smoothing=0,
-    ):
-        listed += 1
-        if not isinstance(e, RepoFile):
-            continue
-        path = e.path
-        # path = PREFIX/<category>/<instance>/(Aligned.obj|Aligned.mtl|textures/..)
-        rel = path[len(PREFIX) + 1 :]  # <category>/<instance>/...
-        parts = rel.split("/")
-        if len(parts) < 3:
-            continue
-        category, instance = parts[0], parts[1]
-        if only_cats is not None and category not in only_cats:
-            continue
-        if not _is_keep(path):
-            continue
-        files.append(path)
-        total_bytes += int(getattr(e, "size", 0) or 0)
-        if parts[-1] == "Aligned.obj":
-            cat_to_instances.setdefault(category, set()).add(instance)
+    # 1. List categories (with retry).
+    if only_cats:
+        cats = sorted(only_cats)
+    else:
+        print("Listing categories ...")
+        entries = _retry(
+            lambda: list(
+                api.list_repo_tree(
+                    repo_id=src.HF_REPO,
+                    repo_type=src.HF_REPO_TYPE,
+                    path_in_repo=PREFIX,
+                )
+            ),
+            attempts=args.retries,
+            what="list categories",
+        )
+        cats = sorted(
+            e.path.split("/")[-1] for e in entries if isinstance(e, RepoFolder)
+        )
+    print(f"{len(cats)} categories.")
 
-    instances = {(c, i) for c, iset in cat_to_instances.items() for i in iset}
-    n_cat = len(cat_to_instances)
-    print(
-        f"\n{len(instances)} objects across {n_cat} categories, "
-        f"{len(files)} files, ~{total_bytes / 1e9:.1f} GB to download "
-        f"(skipped grasp/sim/usd among {listed} listed entries)."
-    )
+    # 2. List files per category (with retry), group by instance.
+    print("Listing objects ...")
+    inst_files: dict[tuple[str, str], list[str]] = {}
+    for cat in tqdm(cats, desc="listing", smoothing=0):
+        try:
+            entries = _retry(
+                lambda c=cat: list(
+                    api.list_repo_tree(
+                        repo_id=src.HF_REPO,
+                        repo_type=src.HF_REPO_TYPE,
+                        path_in_repo=f"{PREFIX}/{c}",
+                        recursive=True,
+                    )
+                ),
+                attempts=args.retries,
+                what=f"list {cat}",
+            )
+        except Exception as e:
+            print(f"  WARN: could not list {cat} after retries: {e}")
+            continue
+        for e in entries:
+            if not isinstance(e, RepoFile) or not _is_keep(e.path):
+                continue
+            parts = e.path[len(PREFIX) + 1 :].split("/")
+            if len(parts) < 3:
+                continue
+            inst_files.setdefault((parts[0], parts[1]), []).append(e.path)
+
+    total = len(inst_files)
+    if total == 0:
+        print("No objects found. Check proxy / network / license acceptance.")
+        return
+
+    # 3. Skip instances already marked complete (e.g. from a previous run).
+    todo: list[tuple[str, str, list[str]]] = []
+    done = 0
+    for (cat, inst), fps in inst_files.items():
+        local_root = CACHE_DIR / PREFIX / cat / inst
+        if (local_root / "Aligned.obj").exists() and (
+            local_root / ".complete"
+        ).exists():
+            done += 1
+        else:
+            todo.append((cat, inst, fps))
+    print(f"{total} objects total: {done} already cached, {len(todo)} to download.\n")
 
     if args.dry_run:
-        print("\nSample (first 15 objects):")
-        for cat, inst in sorted(instances)[:15]:
+        print("Sample (first 15 to download):")
+        for cat, inst, _ in todo[:15]:
             print(f"  {cat}/{inst}")
         return
 
-    if not files:
-        print("Nothing to download.")
-        return
+    # 4. Download one object per task: fetch its files (retry each), link
+    #    textures, mark complete. Global bar tracks objects done/remaining.
+    def do_one(cat: str, inst: str, fps: list[str]) -> None:
+        local_root = CACHE_DIR / PREFIX / cat / inst
+        for fp in fps:
+            _retry(
+                lambda p=fp: hf_hub_download(
+                    repo_id=src.HF_REPO,
+                    repo_type=src.HF_REPO_TYPE,
+                    filename=p,
+                    local_dir=str(CACHE_DIR),
+                ),
+                attempts=args.retries,
+                what=f"download {cat}/{inst}/{fp.split('/')[-1]}",
+            )
+        src._link_textures(local_root)
+        (local_root / ".complete").touch()
 
-    # 2. Download every file in parallel (hf_hub_download skips cached ones).
-    print(f"\nDownloading {len(files)} files with {args.max_workers} workers ...")
+    pbar = tqdm(total=total, initial=done, desc="objects", unit="obj")
     failures: list[tuple[str, str]] = []
-    done = 0
     with ThreadPoolExecutor(max_workers=args.max_workers) as ex:
         futs = {
-            ex.submit(
-                hf_hub_download,
-                repo_id=src.HF_REPO,
-                repo_type=src.HF_REPO_TYPE,
-                filename=path,
-                local_dir=str(CACHE_DIR),
-            ): path
-            for path in files
+            ex.submit(do_one, cat, inst, fps): (cat, inst) for cat, inst, fps in todo
         }
-        for fut in tqdm(as_completed(futs), total=len(futs), desc="downloading"):
-            path = futs[fut]
+        for fut in as_completed(futs):
+            cat, inst = futs[fut]
             try:
                 fut.result()
-                done += 1
             except Exception as e:
-                failures.append((path, str(e)))
-    print(f"downloaded {done}/{len(files)} files, {len(failures)} failed")
+                failures.append((f"{cat}/{inst}", str(e)))
+            pbar.update(1)
+            pbar.set_postfix(remaining=pbar.total - pbar.n, failed=len(failures))
+            pbar.refresh()
+    pbar.close()
 
-    # 3. Link textures into each instance root + mark complete (the env's cache
-    #    contract), so the interndata source treats these as ready/offline.
-    print("\nLinking textures + marking instances complete ...")
-    linked = marked = 0
-    for cat, inst in tqdm(sorted(instances), desc="finalizing"):
-        local_root = CACHE_DIR / PREFIX / cat / inst
-        obj_path = local_root / "Aligned.obj"
-        if not obj_path.exists():
-            failures.append((f"{cat}/{inst}", "Aligned.obj missing after download"))
-            continue
-        try:
-            src._link_textures(local_root)
-            linked += 1
-        except Exception as e:
-            failures.append((f"{cat}/{inst}", f"link_textures: {e}"))
-        (local_root / ".complete").touch()
-        marked += 1
-
-    # 4. Write the category/instance manifests the env reads to enumerate
-    #    objects, so sampling never hits the network either.
+    # 5. Write manifests from what's actually on disk (so the env enumerates and
+    #    samples fully offline -- no HF API calls after this).
     import json
 
     manifest_dir = CACHE_DIR / "manifest"
     manifest_dir.mkdir(parents=True, exist_ok=True)
-    (manifest_dir / "_categories.json").write_text(
-        json.dumps(sorted(cat_to_instances.keys()))
-    )
-    for cat, iset in cat_to_instances.items():
-        (manifest_dir / f"{cat}.json").write_text(json.dumps(sorted(iset)))
-    print(
-        f"Wrote manifests: {len(cat_to_instances) + 1} files "
-        f"(_categories.json + {len(cat_to_instances)} categories)."
-    )
+    cats_local = src._scan_local_categories()
+    (manifest_dir / "_categories.json").write_text(json.dumps(cats_local))
+    for cat in cats_local:
+        (manifest_dir / f"{cat}.json").write_text(
+            json.dumps(src._scan_local_instances(cat))
+        )
 
     print(
-        f"\nDONE: {marked} instances marked complete, {linked} texture-linked. "
-        f"{len(failures)} failures."
+        f"\nDONE: {pbar.n}/{total} objects complete ({len(failures)} failed). "
+        f"Manifests written for {len(cats_local)} categories."
     )
     if failures:
         print("\nFailures (first 30):")
-        for path, err in failures[:30]:
-            print(f"  {path}: {err}")
-        print("\nRe-run the script to retry (already-cached files are skipped).")
+        for name, err in failures[:30]:
+            print(f"  {name}: {err}")
+        print("\nRe-run to retry failed objects (cached files are skipped).")
     else:
         print("\nAll objects cached. PickAnything's interndata source is now offline.")
 
