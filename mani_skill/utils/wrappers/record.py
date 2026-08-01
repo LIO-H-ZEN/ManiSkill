@@ -232,6 +232,7 @@ class RecordEpisode(gym.Wrapper):
         avoid_overwriting_video: bool = False,
         source_type: Optional[str] = None,
         source_desc: Optional[str] = None,
+        video_name_suffix_fn: Optional[Callable[[], str]] = None,
     ) -> None:
         super().__init__(env)
 
@@ -239,6 +240,7 @@ class RecordEpisode(gym.Wrapper):
         if save_trajectory or save_video:
             self.output_dir.mkdir(parents=True, exist_ok=True)
         self.video_fps = video_fps
+        self._video_name_suffix_fn = video_name_suffix_fn
         self._elapsed_record_steps = 0
         self._episode_id = -1
         self._video_id = -1
@@ -779,6 +781,12 @@ class RecordEpisode(gym.Wrapper):
             return
         if save:
             self._video_id += 1
+            # allow a dynamic suffix (e.g. the episode's object source) via callback
+            if not suffix and self._video_name_suffix_fn is not None:
+                try:
+                    suffix = self._video_name_suffix_fn() or ""
+                except Exception:
+                    suffix = ""
             if name is None:
                 video_name = "{}".format(self._video_id)
                 if suffix:
