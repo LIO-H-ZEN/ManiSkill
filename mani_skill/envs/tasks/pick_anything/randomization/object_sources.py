@@ -198,67 +198,123 @@ class InternDataAssetsSource(ObjectSource):
     def _cache_path(self, category: str) -> Path:
         return self.CACHE_DIR / "manifest" / f"{category}.json"
 
+    @staticmethod
+    def _read_json_list(path: Path) -> Optional[list[str]]:
+        """Return the JSON list in ``path``, or None if missing/corrupt/empty.
+
+        Corrupt files (e.g. a manifest left empty by an interrupted write or a
+        cross-disk ``mv``) are deleted so they get rebuilt next time.
+        """
+        if not path.exists():
+            return None
+        import json
+
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, ValueError):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            return None
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+        return [str(x) for x in data]
+
+    def _scan_local_categories(self) -> list[str]:
+        """Category dirs actually present on disk (offline fallback)."""
+        root = self.CACHE_DIR / self.REPO_PREFIX
+        if not root.is_dir():
+            return []
+        return sorted(
+            p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
+        )
+
+    def _scan_local_instances(self, category: str) -> list[str]:
+        """Instance dirs actually downloaded for a category (offline fallback)."""
+        root = self.CACHE_DIR / self.REPO_PREFIX / category
+        if not root.is_dir():
+            return []
+        return sorted(
+            p.name
+            for p in root.iterdir()
+            if p.is_dir() and (p / "Aligned.obj").exists()
+        )
+
     def _list_category_instances(self, category: str) -> np.ndarray:
         if category in self._instances:
             return self._instances[category]
         cache = self._cache_path(category)
-        if cache.exists():
-            import json
 
-            ids = np.array(json.loads(cache.read_text()))
+        cached = self._read_json_list(cache)
+        if cached is not None:
+            ids = np.array(cached)
             self._instances[category] = ids
             return ids
 
-        from huggingface_hub import RepoFolder
-
+        # No valid cache: try the HF tree API, and fall back to scanning the
+        # local cache dir if that fails (e.g. offline machine with
+        # pre-downloaded assets). Either way, rebuild the manifest.
+        ids: Optional[list[str]] = None
         try:
+            from huggingface_hub import RepoFolder
+
             entries = self._list_tree(f"{self.REPO_PREFIX}/{category}")
-            ids = np.array(
-                [e.path.split("/")[-1] for e in entries if isinstance(e, RepoFolder)]
-            )
+            ids = [e.path.split("/")[-1] for e in entries if isinstance(e, RepoFolder)]
         except Exception as e:
-            raise RuntimeError(
-                f"Could not list InternDataAssets instances for category "
-                f"'{category}' from {self.HF_REPO}.\n"
-                "InternDataAssets is gated. Make sure you have (1) a HuggingFace "
-                "token set via `huggingface-cli login` or $HF_TOKEN, and (2) "
-                "accepted the dataset license at "
-                f"https://huggingface.co/datasets/{self.HF_REPO}.\n"
-                f"Original error: {e}"
-            ) from e
-        if len(ids) == 0:
+            local = self._scan_local_instances(category)
+            if not local:
+                raise RuntimeError(
+                    f"Could not list InternDataAssets instances for category "
+                    f"'{category}'. No valid manifest cache, HF API failed, and no "
+                    f"local objects at {self.CACHE_DIR / self.REPO_PREFIX / category}.\n"
+                    "If offline, run the bulk download script first "
+                    "(`python -m mani_skill.examples.download_pick_anything_interndata`), "
+                    "or pass explicit `categories=[...]`.\n"
+                    f"Original HF error: {e}"
+                ) from e
+            ids = local
+
+        ids_arr = np.array(ids)
+        if len(ids_arr) == 0:
             raise RuntimeError(
                 f"InternDataAssets category '{category}' returned no instances."
             )
         cache.parent.mkdir(parents=True, exist_ok=True)
         import json
 
-        cache.write_text(json.dumps(ids.tolist()))
-        self._instances[category] = ids
-        return ids
+        cache.write_text(json.dumps(ids))
+        self._instances[category] = ids_arr
+        return ids_arr
 
     def _list_categories(self) -> list[str]:
         if self.categories is not None:
             return list(self.categories)
-        from huggingface_hub import RepoFolder
 
         cache = self.CACHE_DIR / "manifest" / "_categories.json"
-        if cache.exists():
-            import json
+        cached = self._read_json_list(cache)
+        if cached is not None:
+            return cached
 
-            cats = json.loads(cache.read_text())
-            if cats:
-                return cats
+        cats: Optional[list[str]] = None
         try:
+            from huggingface_hub import RepoFolder
+
             entries = self._list_tree(self.REPO_PREFIX)
             cats = [e.path.split("/")[-1] for e in entries if isinstance(e, RepoFolder)]
         except Exception as e:
-            raise RuntimeError(
-                f"Could not list InternDataAssets categories from {self.HF_REPO}.\n"
-                "InternDataAssets is gated. Run `huggingface-cli login`, accept the "
-                f"license at https://huggingface.co/datasets/{self.HF_REPO}, "
-                f"or pass explicit `categories=[...]`.\nOriginal error: {e}"
-            ) from e
+            local = self._scan_local_categories()
+            if not local:
+                raise RuntimeError(
+                    f"Could not list InternDataAssets categories. No valid manifest "
+                    f"cache, HF API failed, and no local objects at "
+                    f"{self.CACHE_DIR / self.REPO_PREFIX}.\n"
+                    "If offline, run the bulk download script first, or pass explicit "
+                    "`categories=[...]`.\n"
+                    f"Original HF error: {e}"
+                ) from e
+            cats = local
+
         if not cats:
             raise RuntimeError("InternDataAssets returned no categories.")
         cache.parent.mkdir(parents=True, exist_ok=True)
