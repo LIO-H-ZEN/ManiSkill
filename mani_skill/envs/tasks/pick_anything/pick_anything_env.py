@@ -51,7 +51,7 @@ from .randomization import (
     Randomizer,
 )
 from .randomization.object_randomizer import CompositeObjectRandomizer
-from .randomization.table_randomizer import WoodTableRandomizer
+from .randomization.table_randomizer import resolve_table_randomizer
 
 
 @register_env("PickAnything-v1", max_episode_steps=50)
@@ -69,7 +69,7 @@ class PickAnythingEnv(BaseEnv):
         reconfiguration_freq=None,
         object_sources: Optional[Sequence[Union[ObjectSource, str]]] = None,
         object_randomizer: Optional[Randomizer] = None,
-        table_randomizer: Optional[Randomizer] = None,
+        table_randomizer: Optional[Union[Randomizer, str]] = None,
         lighting_randomizer: Optional[Randomizer] = None,
         **kwargs,
     ):
@@ -91,8 +91,12 @@ class PickAnythingEnv(BaseEnv):
             self.object_randomizer = CompositeObjectRandomizer(
                 sources, goal_thresh=self.goal_thresh
             )
-        self.table_randomizer = table_randomizer or WoodTableRandomizer(
-            robot_init_qpos_noise=robot_init_qpos_noise
+        # table: "wood" (default, fixed PickCube wood) / "texture" (random
+        # InternDataAssets table_textures + randomized friction) / "procedural"
+        # (PBR color) / a Randomizer instance.
+        self.table_randomizer = resolve_table_randomizer(
+            table_randomizer if table_randomizer is not None else "wood",
+            robot_init_qpos_noise=robot_init_qpos_noise,
         )
         self.lighting_randomizer = lighting_randomizer or HDRILightingRandomizer()
         if reconfiguration_freq is None:

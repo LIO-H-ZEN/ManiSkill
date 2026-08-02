@@ -63,6 +63,18 @@ class Args:
     (InternRobotics/InternData-A1); needs `huggingface-cli login` + license
     acceptance."""
 
+    table_randomizer: Optional[str] = None
+    """PickAnything only: table surface randomizer alias.
+    `wood` = fixed PickCube wood table (default); `texture` = box table with a
+    random real surface texture (InternDataAssets background_textures) + random
+    friction; `procedural` = box table with random PBR color/metallic/roughness.
+    The `texture` option downloads textures on demand (gated HF dataset)."""
+
+    num_episodes: int = 1
+    """How many episodes to run. On each new episode the env reconfigures, so for
+    PickAnything this re-randomizes the object/table/lighting. Use a value >1
+    with `--render-mode human` to flip through different tables/objects."""
+
 def main(args: Args):
     if args.render_mode == "none":
         args.render_mode = None
@@ -98,6 +110,8 @@ def main(args: Args):
             env_kwargs["robot_uids"] = env_kwargs["robot_uids"][0]
     if args.object_sources is not None:
         env_kwargs["object_sources"] = args.object_sources
+    if args.table_randomizer is not None:
+        env_kwargs["table_randomizer"] = args.table_randomizer
     env: BaseEnv = gym.make(
         args.env_id,
         **env_kwargs
@@ -122,19 +136,28 @@ def main(args: Args):
         if isinstance(viewer, sapien.utils.Viewer):
             viewer.paused = args.pause
         env.render()
-    while True:
-        action = env.action_space.sample() if env.action_space is not None else None
-        obs, reward, terminated, truncated, info = env.step(action)
+    for ep in range(args.num_episodes):
         if verbose:
-            print("reward", reward)
-            print("terminated", terminated)
-            print("truncated", truncated)
-            print("info", info)
-        if args.render_mode == "human":
-            env.render()
-        if args.render_mode is None or args.render_mode != "human":
+            uw = env.unwrapped
+            tex = getattr(uw, "table_texture", None)
+            fric = getattr(uw, "table_friction", None)
+            if tex is not None or fric is not None:
+                print(f"[ep {ep}] table_texture={tex} friction={fric}")
+        while True:
+            action = env.action_space.sample() if env.action_space is not None else None
+            obs, reward, terminated, truncated, info = env.step(action)
+            if verbose:
+                print("reward", reward)
+                print("terminated", terminated)
+                print("truncated", truncated)
+                print("info", info)
+            if args.render_mode == "human":
+                env.render()
             if (terminated | truncated).any():
                 break
+        if ep + 1 < args.num_episodes:
+            # reconfigure to re-randomize PickAnything object/table/lighting
+            env.reset(options=dict(reconfigure=True))
     env.close()
 
     if record_dir:

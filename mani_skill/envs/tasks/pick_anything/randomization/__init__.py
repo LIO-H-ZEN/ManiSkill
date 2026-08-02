@@ -9,7 +9,13 @@ from .object_sources import (
     YCBSource,
     resolve_object_source,
 )
-from .table_randomizer import ProceduralTableRandomizer, WoodTableRandomizer
+from .table_randomizer import (
+    ProceduralTableRandomizer,
+    TableTextureSource,
+    TextureTableRandomizer,
+    WoodTableRandomizer,
+    resolve_table_randomizer,
+)
 
 __all__ = [
     "Randomizer",
@@ -24,6 +30,9 @@ __all__ = [
     "ProceduralObjectRandomizer",
     # table
     "WoodTableRandomizer",
+    "TextureTableRandomizer",
+    "TableTextureSource",
+    "resolve_table_randomizer",
     "ProceduralTableRandomizer",
     # lighting
     "HDRILightingRandomizer",
