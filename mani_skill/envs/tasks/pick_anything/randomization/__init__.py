@@ -10,6 +10,7 @@ from .object_sources import (
     resolve_object_source,
 )
 from .table_randomizer import (
+    CompositeTableRandomizer,
     ProceduralTableRandomizer,
     TableTextureSource,
     TextureTableRandomizer,
@@ -31,6 +32,7 @@ __all__ = [
     # table
     "WoodTableRandomizer",
     "TextureTableRandomizer",
+    "CompositeTableRandomizer",
     "TableTextureSource",
     "resolve_table_randomizer",
     "ProceduralTableRandomizer",

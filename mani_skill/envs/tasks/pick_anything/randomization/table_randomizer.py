@@ -505,24 +505,70 @@ class TextureTableRandomizer(_RealTableRandomizer):
         env.table_friction = (sf, df, rest)
 
 
-# String alias -> table randomizer, used by the env to accept simple config like
-# table="wood" / table="texture".
+class CompositeTableRandomizer(Randomizer):
+    """Pick one table randomizer per reconfigure and delegate to it.
+
+    Lets a config mix table strategies --- e.g. ``["wood", "texture"]`` uses the
+    fixed wood table on some reconfigures and a random textured table on others.
+    One sub-randomizer is drawn uniformly per reconfigure (env 0's RNG) and
+    receives every subsequent hook until the next reconfigure.
+    """
+
+    def __init__(self, randomizers: list[Randomizer]):
+        if not randomizers:
+            raise ValueError("CompositeTableRandomizer needs at least one randomizer.")
+        self.randomizers = list(randomizers)
+        self._current: Optional[Randomizer] = None
+
+    def on_reconfigure(self, env, options: dict) -> None:
+        rng = env._batched_episode_rng[0]
+        self._current = self.randomizers[int(rng.randint(0, len(self.randomizers)))]
+        env.table_randomizer_choice = type(self._current).__name__  # debug
+        # clear per-strategy debug attrs so they reflect the current choice, not
+        # whichever randomizer ran on the previous reconfigure
+        for a in ("table_texture", "table_friction", "table_material_type"):
+            if hasattr(env, a):
+                setattr(env, a, None)
+        self._current.on_reconfigure(env, options)
+
+    def on_after_reconfigure(self, env, options: dict) -> None:
+        if self._current is not None:
+            self._current.on_after_reconfigure(env, options)
+
+    def on_initialize_episode(self, env, env_idx, options: dict) -> None:
+        if self._current is not None:
+            self._current.on_initialize_episode(env, env_idx, options)
+
+
+def _resolve_single_table(key: str, robot_init_qpos_noise: float) -> Randomizer:
+    key = key.lower()
+    if key == "wood":
+        return WoodTableRandomizer(robot_init_qpos_noise=robot_init_qpos_noise)
+    if key in ("texture", "textures", "interndata"):
+        return TextureTableRandomizer(robot_init_qpos_noise=robot_init_qpos_noise)
+    if key == "procedural":
+        return ProceduralTableRandomizer(robot_init_qpos_noise=robot_init_qpos_noise)
+    raise ValueError(
+        f"Unknown table randomizer '{key}'. Valid: wood, texture, procedural."
+    )
+
+
+# String alias / list of aliases -> table randomizer, used by the env to accept
+# simple config like table="wood" / table="texture" / table=["wood","texture"].
 def resolve_table_randomizer(
     obj, robot_init_qpos_noise: float = 0.02
 ) -> Randomizer:
     if isinstance(obj, Randomizer):
         return obj
     if isinstance(obj, str):
-        key = obj.lower()
-        if key == "wood":
-            return WoodTableRandomizer(robot_init_qpos_noise=robot_init_qpos_noise)
-        if key in ("texture", "textures", "interndata"):
-            return TextureTableRandomizer(robot_init_qpos_noise=robot_init_qpos_noise)
-        if key == "procedural":
-            return ProceduralTableRandomizer()
-        raise ValueError(
-            f"Unknown table randomizer '{obj}'. Valid: wood, texture, procedural."
+        return _resolve_single_table(obj, robot_init_qpos_noise)
+    if isinstance(obj, (list, tuple)):
+        if len(obj) == 1:
+            return resolve_table_randomizer(obj[0], robot_init_qpos_noise)
+        return CompositeTableRandomizer(
+            [resolve_table_randomizer(o, robot_init_qpos_noise) for o in obj]
         )
     raise TypeError(
-        f"table randomizer must be a Randomizer or string alias, got {obj!r}"
+        f"table randomizer must be a Randomizer, string alias, or list of them; "
+        f"got {obj!r}"
     )

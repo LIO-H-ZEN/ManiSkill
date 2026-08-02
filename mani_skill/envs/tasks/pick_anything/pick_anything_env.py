@@ -69,7 +69,7 @@ class PickAnythingEnv(BaseEnv):
         reconfiguration_freq=None,
         object_sources: Optional[Sequence[Union[ObjectSource, str]]] = None,
         object_randomizer: Optional[Randomizer] = None,
-        table_randomizer: Optional[Union[Randomizer, str]] = None,
+        table_randomizer: Optional[Union[Randomizer, str, Sequence[str]]] = None,
         lighting_randomizer: Optional[Randomizer] = None,
         **kwargs,
     ):
@@ -93,7 +93,8 @@ class PickAnythingEnv(BaseEnv):
             )
         # table: "wood" (default, fixed PickCube wood) / "texture" (random
         # InternDataAssets table_textures + randomized friction) / "procedural"
-        # (PBR color) / a Randomizer instance.
+        # (PBR color) / a Randomizer instance / a list of aliases to mix per
+        # reconfigure (e.g. ["wood","texture"]).
         self.table_randomizer = resolve_table_randomizer(
             table_randomizer if table_randomizer is not None else "wood",
             robot_init_qpos_noise=robot_init_qpos_noise,

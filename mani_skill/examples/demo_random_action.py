@@ -63,12 +63,13 @@ class Args:
     (InternRobotics/InternData-A1); needs `huggingface-cli login` + license
     acceptance."""
 
-    table_randomizer: Optional[str] = None
-    """PickAnything only: table surface randomizer alias.
-    `wood` = fixed PickCube wood table (default); `texture` = box table with a
-    random real surface texture (InternDataAssets background_textures) + random
-    friction; `procedural` = box table with random PBR color/metallic/roughness.
-    The `texture` option downloads textures on demand (gated HF dataset)."""
+    table_randomizer: Optional[List[str]] = None
+    """PickAnything only: table surface randomizer alias, or a list of them to
+    mix per reconfigure. `wood` = fixed PickCube wood table (default);
+    `texture` = real InternDataAssets table-surface texture + random friction;
+    `procedural` = random PBR color/metallic/roughness. Pass multiple to mix,
+    e.g. `--table-randomizer wood texture` picks one each reconfigure. `texture`
+    downloads textures on demand (gated HF dataset)."""
 
     num_episodes: int = 1
     """Number of episodes to run in non-human render mode (each reconfigures,
@@ -142,10 +143,21 @@ def main(args: Args):
     while True:
         if verbose:
             uw = env.unwrapped
+            bits = []
+            choice = getattr(uw, "table_randomizer_choice", None)
+            if choice is not None:
+                bits.append(f"table={choice}")
             tex = getattr(uw, "table_texture", None)
+            if tex is not None:
+                bits.append(f"tex={tex}")
+            mtype = getattr(uw, "table_material_type", None)
+            if mtype is not None:
+                bits.append(f"mtype={mtype}")
             fric = getattr(uw, "table_friction", None)
-            if tex is not None or fric is not None:
-                print(f"[ep {ep}] table_texture={tex} friction={fric}")
+            if fric is not None:
+                bits.append(f"friction={fric}")
+            if bits:
+                print(f"[ep {ep}] " + " ".join(bits))
         while True:
             action = env.action_space.sample() if env.action_space is not None else None
             obs, reward, terminated, truncated, info = env.step(action)
