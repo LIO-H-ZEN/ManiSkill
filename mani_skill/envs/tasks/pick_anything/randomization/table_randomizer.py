@@ -1,16 +1,21 @@
 """Table / surface randomizers for PickAnything.
 
-v1 builds a box table and randomizes its **PBR material** (base color +
-metallic + roughness) across a few material "types" (metal / glossy / matte),
-instead of the fixed wood ``table.glb`` that ``TableSceneBuilder`` uses. A
-metallic table reflects the HDRI/lights and looks clearly different from a matte
-one, so the material axis is visible without any texture download.
+All randomizers keep the real legged PickCube ``table.glb`` silhouette (tabletop
++ legs, top at z=0); they differ only in how they randomize the table's
+**surface**:
 
-Note: procedural params give material *type* variety (metal vs glossy vs matte),
-not wood-grain / marble-vein realism. For true realistic surfaces, swap in real
-PBR textures (``base_color_texture`` + ``normal_texture`` + ``roughness_texture``)
---- SAPIEN's ``RenderMaterial`` supports them; that is the v3 (InternDataAssets)
-step.
+- :class:`WoodTableRandomizer` --- fixed wood (the faithful PickCube table via
+  :class:`TableSceneBuilder`).
+- :class:`ProceduralTableRandomizer` --- randomized PBR params (base color +
+  metallic + roughness) across material types (metal / glossy / matte). No
+  download; this is the zero-download material-variety option.
+- :class:`TextureTableRandomizer` --- a real surface texture sampled from
+  InternDataAssets (``background_textures``) + **independently** randomized
+  friction on the collision. Appearance and contact dynamics are decoupled.
+
+The procedural/texture randomizers load ``table.glb`` directly and override its
+per-part materials in place (the glb loads as one triangle-mesh render shape
+with multiple parts, each carrying its own material).
 """
 
 from __future__ import annotations
@@ -69,23 +74,113 @@ MATERIAL_PRESETS = {
 }
 
 
-class ProceduralTableRandomizer(Randomizer):
-    """A box table with a randomized PBR material (color + metallic + roughness).
+class _RealTableRandomizer(Randomizer):
+    """Base for randomizers that reuse the real legged ``table.glb`` and only
+    swap its visual material per reconfigure.
 
-    The table top is at z=0 (matching the PickCube convention, so objects spawn
-    at z=half_size). Table and ground are static/kinematic and shared across all
-    parallel envs; only the material is randomized per reconfigure.
+    Subclasses implement :meth:`_apply_visual` to override the glb's per-part
+    materials (texture, PBR params, ...). The table is kinematic, top at z=0,
+    shared across parallel envs; robot init is owned by the env, not the
+    randomizer.
+    """
+
+    # PickCube table geometry --- mirrors
+    # mani_skill.utils.scene_builder.table.scene_builder.TableSceneBuilder so the
+    # legged table.glb is reused exactly (scale, collision box, pose); only the
+    # material is swapped.
+    _TABLE_SCALE = 1.75
+    _TABLE_H = 0.9196429
+    _TABLE_HALF = (2.418 / 2, 1.209 / 2, 0.9196429 / 2)
+    _TABLE_OFFSET = (-0.12, 0, -0.9196429)
+
+    def __init__(self, robot_init_qpos_noise: float = 0.02):
+        self.robot_init_qpos_noise = robot_init_qpos_noise
+
+    @staticmethod
+    def _table_glb_path() -> str:
+        from mani_skill.utils.scene_builder.table import scene_builder as _tsb
+
+        return str(Path(_tsb.__file__).parent / "assets" / "table.glb")
+
+    def _apply_visual(self, table) -> None:
+        """Override the glb's per-part materials. Implemented by subclasses."""
+        raise NotImplementedError
+
+    @staticmethod
+    def _each_part_material(table):
+        """Yield each ``RenderMaterial`` on each visual part of the glb table.
+
+        ``table.glb`` loads as one ``RenderShapeTriangleMesh`` with multiple
+        parts (tabletop, legs), each carrying its own material. ``shape.material``
+        raises when parts differ, so we iterate parts.
+        """
+        rb = table._objs[0].find_component_by_type(
+            sapien.render.RenderBodyComponent
+        )
+        if rb is None:
+            return
+        for shape in rb.render_shapes:
+            for part in getattr(shape, "parts", None) or []:
+                mat = part.material
+                if mat is not None:
+                    yield mat
+
+    def _build_table(self, env, physx_mat=None) -> None:
+        """Build the legged ``table.glb`` + box collision, then override visuals.
+
+        ``physx_mat`` (optional) attaches a friction material to the collision;
+        ``None`` leaves the scene default (used by the procedural randomizer).
+        """
+        ox, oy, oz = self._TABLE_OFFSET
+        builder = env.scene.create_actor_builder()
+        coll_kwargs = dict(
+            pose=sapien.Pose(p=[0, 0, self._TABLE_H / 2]),
+            half_size=list(self._TABLE_HALF),
+        )
+        if physx_mat is not None:
+            coll_kwargs["material"] = physx_mat
+        builder.add_box_collision(**coll_kwargs)
+        builder.add_visual_from_file(
+            filename=self._table_glb_path(),
+            scale=[self._TABLE_SCALE] * 3,
+            pose=sapien.Pose(q=euler2quat(0, 0, np.pi / 2)),
+        )
+        builder.initial_pose = sapien.Pose(
+            p=[ox, oy, oz], q=euler2quat(0, 0, np.pi / 2)
+        )
+        env.table = builder.build_kinematic(name="table-workspace")
+
+        self._apply_visual(env.table)
+
+        floor_width = 500 if env.scene.parallel_in_single_scene else 100
+        env.ground = build_ground(
+            env.scene, floor_width=floor_width, altitude=-(self._TABLE_H)
+        )
+
+    def on_initialize_episode(self, env, env_idx, options: dict) -> None:
+        pass  # static kinematic table (pose set at build); env owns robot init
+
+
+class ProceduralTableRandomizer(_RealTableRandomizer):
+    """Real legged PickCube table with a randomized PBR material.
+
+    Reuses ``table.glb`` (so the table keeps its silhouette) and overrides each
+    part's material with sampled PBR parameters across a few material "types"
+    (metal / glossy / matte). No texture download --- this is the zero-download
+    material-variety option. Friction is left at the scene default; for
+    randomized friction use :class:`TextureTableRandomizer`.
     """
 
     def __init__(
         self,
-        table_half_size=(0.5, 0.5, 0.4),
+        robot_init_qpos_noise: float = 0.02,
         material_types: list[str] | None = None,
     ):
-        self.table_half_size = table_half_size
+        super().__init__(robot_init_qpos_noise=robot_init_qpos_noise)
         self.material_types = list(material_types) if material_types else list(
             MATERIAL_PRESETS
         )
+        self._pbr = None  # set per reconfigure, read by _apply_visual
 
     def _sample_material(self, env):
         rng = env._batched_episode_rng
@@ -95,25 +190,23 @@ class ProceduralTableRandomizer(Randomizer):
         roughness = float(rng.uniform(*p["roughness"])[0])
         lo, hi = p["color"]
         col = rng.uniform(lo, hi, size=(3,))[0]
+        color = [float(col[0]), float(col[1]), float(col[2]), 1.0]
+        return mtype, color, metallic, roughness
 
-        mat = sapien.render.RenderMaterial()
-        mat.set_base_color([float(col[0]), float(col[1]), float(col[2]), 1.0])
-        mat.set_metallic(metallic)
-        mat.set_roughness(roughness)
-        return mat, mtype
+    def _apply_visual(self, table) -> None:
+        if self._pbr is None:
+            return
+        _, color, metallic, roughness = self._pbr
+        for mat in self._each_part_material(table):
+            mat.set_base_color(color)
+            mat.set_metallic(metallic)
+            mat.set_roughness(roughness)
 
     def on_reconfigure(self, env, options: dict) -> None:
-        hx, hy, hz = self.table_half_size
-        mat, mtype = self._sample_material(env)
+        mtype, color, metallic, roughness = self._sample_material(env)
+        self._pbr = (mtype, color, metallic, roughness)
         env.table_material_type = mtype  # exposed for logging / debugging
-
-        builder = env.scene.create_actor_builder()
-        builder.add_box_collision(half_size=[hx, hy, hz])
-        builder.add_box_visual(half_size=[hx, hy, hz], material=mat)
-        builder.initial_pose = sapien.Pose(p=[0, 0, -hz])  # top surface at z=0
-        env.table = builder.build_kinematic(name="table")
-
-        env.ground = build_ground(env.scene, floor_width=100, altitude=-(2 * hz))
+        self._build_table(env, physx_mat=None)
 
 
 # ---------------------------------------------------------------------------- #
@@ -305,7 +398,7 @@ class TableTextureSource:
         return self._ensure_safe_size(local)
 
 
-class TextureTableRandomizer(Randomizer):
+class TextureTableRandomizer(_RealTableRandomizer):
     """Real legged PickCube table with a random surface texture + random friction.
 
     Visual: the actual ``table.glb`` (tabletop + legs) is loaded as the visual,
@@ -322,19 +415,8 @@ class TextureTableRandomizer(Randomizer):
     appearance and contact dynamics are decoupled, which is the right DR setup
     for sim2real (a wood-grain table may be slippery or grippy).
 
-    The table is kinematic and shared across parallel envs; one texture + one
-    friction set are drawn per reconfigure (env 0's RNG). Robot init is owned by
-    the env, not this randomizer.
+    One texture + one friction set are drawn per reconfigure (env 0's RNG).
     """
-
-    # PickCube table geometry --- mirrors
-    # mani_skill.utils.scene_builder.table.scene_builder.TableSceneBuilder so the
-    # legged table.glb is reused exactly (scale, collision box, pose); only the
-    # material is swapped.
-    _TABLE_SCALE = 1.75
-    _TABLE_H = 0.9196429
-    _TABLE_HALF = (2.418 / 2, 1.209 / 2, 0.9196429 / 2)
-    _TABLE_OFFSET = (-0.12, 0, -0.9196429)
 
     def __init__(
         self,
@@ -345,41 +427,24 @@ class TextureTableRandomizer(Randomizer):
         restitution=(0.0, 0.05),
         roughness: float = 0.85,
     ):
-        self.robot_init_qpos_noise = robot_init_qpos_noise
+        super().__init__(robot_init_qpos_noise=robot_init_qpos_noise)
         self.texture_source = texture_source or TableTextureSource()
         self.static_friction = static_friction
         self.dynamic_friction = dynamic_friction
         self.restitution = restitution
         self.roughness = roughness
+        self._tex_path = None  # set per reconfigure, read by _apply_visual
 
-    @staticmethod
-    def _table_glb_path() -> str:
-        from mani_skill.utils.scene_builder.table import scene_builder as _tsb
-
-        return str(Path(_tsb.__file__).parent / "assets" / "table.glb")
-
-    def _apply_texture(self, table, tex_path: str) -> None:
-        """Override each visual part's material with the sampled texture in place.
-
-        ``table.glb`` loads as one ``RenderShapeTriangleMesh`` with multiple
-        parts (tabletop, legs), each carrying its own material. ``shape.material``
-        raises when parts differ, so we set per-part.
-        """
-        rb = table._objs[0].find_component_by_type(
-            sapien.render.RenderBodyComponent
-        )
-        if rb is None:
+    def _apply_visual(self, table) -> None:
+        if self._tex_path is None:
             return
-        for shape in rb.render_shapes:
-            for part in getattr(shape, "parts", None) or []:
-                mat = part.material
-                if mat is None:
-                    continue
-                mat.set_base_color_texture(
-                    sapien.render.RenderTexture2D(filename=tex_path)
-                )
-                mat.set_metallic(0.0)
-                mat.set_roughness(self.roughness)
+        for mat in self._each_part_material(table):
+            mat.set_base_color_texture(
+                sapien.render.RenderTexture2D(filename=self._tex_path)
+            )
+            # no PBR maps available; pick a sane non-metallic, moderately rough surface
+            mat.set_metallic(0.0)
+            mat.set_roughness(self.roughness)
 
     def on_reconfigure(self, env, options: dict) -> None:
         # env 0's sub-RNG drives the shared table sample (one texture + one
@@ -387,6 +452,7 @@ class TextureTableRandomizer(Randomizer):
         rng = env._batched_episode_rng[0]
 
         tex_path = self.texture_source.get_texture(rng)
+        self._tex_path = tex_path
         sf = float(rng.uniform(*self.static_friction))
         df = float(rng.uniform(*self.dynamic_friction))
         rest = float(rng.uniform(*self.restitution))
@@ -394,38 +460,11 @@ class TextureTableRandomizer(Randomizer):
         physx_mat = sapien.pysapien.physx.PhysxMaterial(
             static_friction=sf, dynamic_friction=df, restitution=rest
         )
-
-        ox, oy, oz = self._TABLE_OFFSET
-        builder = env.scene.create_actor_builder()
-        builder.add_box_collision(
-            pose=sapien.Pose(p=[0, 0, self._TABLE_H / 2]),
-            half_size=list(self._TABLE_HALF),
-            material=physx_mat,
-        )
-        builder.add_visual_from_file(
-            filename=self._table_glb_path(),
-            scale=[self._TABLE_SCALE] * 3,
-            pose=sapien.Pose(q=euler2quat(0, 0, np.pi / 2)),
-        )
-        builder.initial_pose = sapien.Pose(
-            p=[ox, oy, oz], q=euler2quat(0, 0, np.pi / 2)
-        )
-        env.table = builder.build_kinematic(name="table-workspace")
-
-        # swap the glb's wood material for the sampled surface texture
-        self._apply_texture(env.table, tex_path)
-
-        floor_width = 500 if env.scene.parallel_in_single_scene else 100
-        env.ground = build_ground(
-            env.scene, floor_width=floor_width, altitude=-(self._TABLE_H)
-        )
+        self._build_table(env, physx_mat=physx_mat)
 
         # exposed for logging / debugging
         env.table_texture = os.path.basename(tex_path)
         env.table_friction = (sf, df, rest)
-
-    def on_initialize_episode(self, env, env_idx, options: dict) -> None:
-        pass  # static kinematic table (pose set at build); env owns robot init
 
 
 # String alias -> table randomizer, used by the env to accept simple config like
