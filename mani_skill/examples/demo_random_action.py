@@ -71,9 +71,10 @@ class Args:
     The `texture` option downloads textures on demand (gated HF dataset)."""
 
     num_episodes: int = 1
-    """How many episodes to run. On each new episode the env reconfigures, so for
-    PickAnything this re-randomizes the object/table/lighting. Use a value >1
-    with `--render-mode human` to flip through different tables/objects."""
+    """Number of episodes to run in non-human render mode (each reconfigures,
+    re-randomizing PickAnything object/table/lighting). In human render mode the
+    demo runs indefinitely, resetting to a fresh episode on the same table each
+    time an episode ends (use a different -s seed to see a different table)."""
 
 def main(args: Args):
     if args.render_mode == "none":
@@ -136,7 +137,9 @@ def main(args: Args):
         if isinstance(viewer, sapien.utils.Viewer):
             viewer.paused = args.pause
         env.render()
-    for ep in range(args.num_episodes):
+    human = args.render_mode == "human"
+    ep = 0
+    while True:
         if verbose:
             uw = env.unwrapped
             tex = getattr(uw, "table_texture", None)
@@ -151,11 +154,17 @@ def main(args: Args):
                 print("terminated", terminated)
                 print("truncated", truncated)
                 print("info", info)
-            if args.render_mode == "human":
+            if human:
                 env.render()
             if (terminated | truncated).any():
                 break
-        if ep + 1 < args.num_episodes:
+        ep += 1
+        if not human and ep >= args.num_episodes:
+            break
+        if human:
+            # keep running forever: fresh episode on the same table
+            env.reset()
+        else:
             # reconfigure to re-randomize PickAnything object/table/lighting
             env.reset(options=dict(reconfigure=True))
     env.close()
