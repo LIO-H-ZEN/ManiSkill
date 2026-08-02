@@ -9,9 +9,10 @@ All randomizers keep the real legged PickCube ``table.glb`` silhouette (tabletop
 - :class:`ProceduralTableRandomizer` --- randomized PBR params (base color +
   metallic + roughness) across material types (metal / glossy / matte). No
   download; this is the zero-download material-variety option.
-- :class:`TextureTableRandomizer` --- a real surface texture sampled from
-  InternDataAssets (``background_textures``) + **independently** randomized
-  friction on the collision. Appearance and contact dynamics are decoupled.
+- :class:`TextureTableRandomizer` --- a real table-surface texture sampled
+  from InternDataAssets (``dark_table_textures`` + ``light_table_textures``)
+  + **independently** randomized friction on the collision. Appearance and
+  contact dynamics are decoupled.
 
 The procedural/texture randomizers load ``table.glb`` directly and override its
 per-part materials in place (the glb loads as one triangle-mesh render shape
@@ -22,7 +23,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence, Union
 
 import numpy as np
 import sapien
@@ -260,25 +261,24 @@ def _read_json_list(path: Path) -> Optional[list[str]]:
 
 
 class TableTextureSource:
-    """Random surface texture for the table from InternDataAssets.
+    """Random table-surface texture from InternDataAssets.
 
-    **Which folder?** InternDataAssets has several texture dirs, and they are
-    very different in content:
+    InternDataAssets has several texture folders, very different in content:
 
-    - ``background_textures`` (**default**, ~101, 2--4K JPG) --- real tileable
-      surface materials: wood, marble, concrete, brick, carpet, ... These are
-      the right choice for a realistic table surface. ``floor_textures`` (~16)
-      is a subset of these.
-    - ``table_textures`` (~896 JPG) --- despite the name these are **COCO-style
-      photos** (people, food, trains), i.e. distractor backdrops, not seamless
-      surfaces. Use this only if you want random-photo visual distractors.
-    - ``dark_table_textures`` (~5 large PNG) --- dark surfaces.
+    - ``dark_table_textures`` (~7), ``light_table_textures`` (~5) --- **real
+      table-surface textures** (the default pool). Despite the COCO-style
+      numeric filenames, these are genuine tabletop surface images.
+    - ``background_textures`` (~101), ``floor_textures`` (~16, subset) --- real
+      surface materials but a mix of wood/marble/concrete/brick/carpet; some
+      read as floor rather than table. Add these for more DR variety.
+    - ``table_textures`` (~896) --- despite the name, **COCO-style photos**
+      (people/food/objects), not surfaces. Avoid for a table.
 
-    The dataset ships **no** physical metadata, so this source is visual-only.
-    Files are listed via the HF tree API (cached to a manifest) and downloaded
-    on demand, cached under ``ASSET_DIR/intern_data_assets/`` (shared with the
-    object cache). Falls back to scanning the local cache if the HF API is
-    unreachable (offline machine with pre-downloaded textures).
+    The dataset ships no physical metadata, so this source is visual-only.
+    Files are listed via the HF tree API (cached per subdir to a manifest) and
+    downloaded on demand, cached under ``ASSET_DIR/intern_data_assets/``
+    (shared with the object cache). Falls back to scanning the local cache if
+    the HF API is unreachable (offline machine with pre-downloaded textures).
     """
 
     HF_REPO = "InternRobotics/InternData-A1"
@@ -288,18 +288,21 @@ class TableTextureSource:
 
     def __init__(
         self,
-        subdir: str = "background_textures",
+        subdir: Union[str, Sequence[str]] = (
+            "dark_table_textures",
+            "light_table_textures",
+        ),
         textures: Optional[list[str]] = None,
         max_texture_dim: int = 1024,
     ):
         """
         Args:
-            subdir: which InternDataAssets texture folder to use. Default
-                ``"background_textures"`` (real surface materials). Alternatives:
-                ``"floor_textures"``, ``"dark_table_textures"``,
-                ``"table_textures"`` (COCO photo distractors).
-            textures: explicit list of repo-relative texture filenames to sample
-                from. ``None`` = discover all via HF / local scan.
+            subdir: one InternDataAssets texture folder, or a list of them to
+                pool and sample from. Default pools the two real table-surface
+                folders (``dark_table_textures`` + ``light_table_textures``).
+                Add ``"background_textures"`` for more (floor-ish) variety.
+            textures: explicit list of repo-relative texture paths to sample
+                from (overrides subdir discovery). ``None`` = discover all.
             max_texture_dim: textures larger than this on their long side are
                 downscaled (and re-encoded to PNG) before being handed to SAPIEN.
                 InternDataAssets ships 4096px JPGs that sporadically trigger a
@@ -307,35 +310,28 @@ class TableTextureSource:
                 a 1024px cap avoids it and is plenty for a table surface (the
                 cameras are 128/512px). Set 0 to disable. Cached, so paid once.
         """
-        self.subdir = subdir
-        self.REPO_PREFIX = f"InternDataAssets/assets/{subdir}"
+        self.subdirs = [subdir] if isinstance(subdir, str) else list(subdir)
         self.textures = textures
         self.max_texture_dim = max_texture_dim
         self._files: Optional[list[str]] = None
 
-    def _cache_file(self) -> Path:
-        return self.CACHE_ROOT / "manifest" / f"{self.subdir}.json"
+    def _cache_file(self, subdir: str) -> Path:
+        return self.CACHE_ROOT / "manifest" / f"{subdir}.json"
 
-    def _scan_local(self) -> list[str]:
-        root = self.CACHE_ROOT / self.REPO_PREFIX
+    def _scan_local(self, subdir: str) -> list[str]:
+        root = self.CACHE_ROOT / "InternDataAssets" / "assets" / subdir
         if not root.is_dir():
             return []
         return sorted(
             p.name for p in root.iterdir() if p.is_file() and p.suffix.lower() in self._IMG_EXT
         )
 
-    def _list_files(self) -> list[str]:
-        if self.textures is not None:
-            return list(self.textures)
-        if self._files is not None:
-            return self._files
-
-        cached = _read_json_list(self._cache_file())
+    def _list_subdir(self, subdir: str) -> list[str]:
+        """Full repo paths for one subdir (manifest cache, HF/local fallback)."""
+        prefix = f"InternDataAssets/assets/{subdir}"
+        cached = _read_json_list(self._cache_file(subdir))
         if cached is not None:
-            self._files = cached
             return cached
-
-        # Try HF tree API; fall back to a local scan of downloaded textures.
         try:
             from huggingface_hub import HfApi, RepoFile
 
@@ -343,26 +339,40 @@ class TableTextureSource:
                 HfApi().list_repo_tree(
                     repo_id=self.HF_REPO,
                     repo_type=self.HF_REPO_TYPE,
-                    path_in_repo=self.REPO_PREFIX,
+                    path_in_repo=prefix,
                 )
             )
             files = [e.path for e in entries if isinstance(e, RepoFile)]
         except Exception as e:
-            local = self._scan_local()
+            local = self._scan_local(subdir)
             if not local:
                 raise RuntimeError(
-                    f"Could not list InternDataAssets table textures. No valid "
-                    f"manifest, HF API failed, and no local textures at "
-                    f"{self.CACHE_ROOT / self.REPO_PREFIX}.\nOriginal error: {e}"
+                    f"Could not list InternDataAssets textures under {subdir}. No "
+                    f"valid manifest, HF API failed, and no local textures at "
+                    f"{self.CACHE_ROOT / prefix}.\nOriginal error: {e}"
                 ) from e
-            files = [f"{self.REPO_PREFIX}/{n}" for n in local]
+            files = [f"{prefix}/{n}" for n in local]
 
         if not files:
-            raise RuntimeError("InternDataAssets table_textures returned no files.")
-        self._cache_file().parent.mkdir(parents=True, exist_ok=True)
+            raise RuntimeError(f"InternDataAssets {subdir} returned no files.")
+        self._cache_file(subdir).parent.mkdir(parents=True, exist_ok=True)
         import json
 
-        self._cache_file().write_text(json.dumps(files))
+        self._cache_file(subdir).write_text(json.dumps(files))
+        return files
+
+    def _list_files(self) -> list[str]:
+        if self.textures is not None:
+            return list(self.textures)
+        if self._files is not None:
+            return self._files
+        files: list[str] = []
+        for subdir in self.subdirs:
+            files.extend(self._list_subdir(subdir))
+        if not files:
+            raise RuntimeError(
+                f"InternDataAssets table textures empty for subdirs={self.subdirs}."
+            )
         self._files = files
         return files
 
@@ -427,10 +437,11 @@ class TextureTableRandomizer(_RealTableRandomizer):
 
     Visual: the actual ``table.glb`` (tabletop + legs) is loaded as the visual,
     and each of its per-part materials is overridden **in place** with a sampled
-    InternDataAssets surface texture (default ``background_textures`` --- real
-    wood/marble/concrete materials) via :class:`TableTextureSource`. This keeps
-    the real table silhouette (not a plain box) while randomizing the surface
-    appearance per reconfigure. The dataset ships no PBR/physics metadata, so
+    InternDataAssets table-surface texture (default pools
+    ``dark_table_textures`` + ``light_table_textures`` --- genuine tabletop
+    surfaces) via :class:`TableTextureSource`. This keeps the real table
+    silhouette (not a plain box) while randomizing the surface appearance per
+    reconfigure. The dataset ships no PBR/physics metadata, so
     this is a diffuse color map only (no normal/roughness maps).
 
     Physics: a :class:`sapien.physx.PhysxMaterial` with randomized
