@@ -125,6 +125,27 @@ class _RealTableRandomizer(Randomizer):
                 if mat is not None:
                     yield mat
 
+    @staticmethod
+    def _clear_pbr_textures(mat) -> None:
+        """Drop every PBR texture map on ``mat`` so only scalars/colors show.
+
+        The glb tabletop ships wood-grain base_color/normal/roughness/metallic
+        maps; clearing ``base_color_texture`` alone still leaves the
+        normal/roughness grain relief, so the wood pattern stays visible.
+        """
+        for setter in (
+            mat.set_base_color_texture,
+            mat.set_normal_texture,
+            mat.set_roughness_texture,
+            mat.set_metallic_texture,
+            mat.set_emission_texture,
+            mat.set_transmission_texture,
+        ):
+            try:
+                setter(None)
+            except Exception:
+                pass
+
     def _build_table(self, env, physx_mat=None) -> None:
         """Build the legged ``table.glb`` + box collision, then override visuals.
 
@@ -198,6 +219,9 @@ class ProceduralTableRandomizer(_RealTableRandomizer):
             return
         _, color, metallic, roughness = self._pbr
         for mat in self._each_part_material(table):
+            # drop the glb's wood base_color/normal/roughness/metallic maps so
+            # the flat base_color shows with no wood-grain relief
+            self._clear_pbr_textures(mat)
             mat.set_base_color(color)
             mat.set_metallic(metallic)
             mat.set_roughness(roughness)
@@ -439,6 +463,9 @@ class TextureTableRandomizer(_RealTableRandomizer):
         if self._tex_path is None:
             return
         for mat in self._each_part_material(table):
+            # drop the glb's wood maps (base_color/normal/roughness/metallic)
+            # so only the sampled surface texture shows, with no wood-grain relief
+            self._clear_pbr_textures(mat)
             mat.set_base_color_texture(
                 sapien.render.RenderTexture2D(filename=self._tex_path)
             )
