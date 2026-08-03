@@ -71,6 +71,11 @@ class Args:
     e.g. `--table-randomizer wood texture` picks one each reconfigure. `texture`
     downloads textures on demand (gated HF dataset)."""
 
+    floor_randomizer: Optional[str] = None
+    """PickAnything only: floor (ground) randomizer alias. `texture` (default) =
+    InternDataAssets floor textures (floor_textures + background_textures);
+    `grid` = checkered grid (no download). Independent of the table."""
+
     num_episodes: int = 1
     """Number of episodes to run in non-human render mode (each reconfigures,
     re-randomizing PickAnything object/table/lighting). In human render mode the
@@ -114,6 +119,8 @@ def main(args: Args):
         env_kwargs["object_sources"] = args.object_sources
     if args.table_randomizer is not None:
         env_kwargs["table_randomizer"] = args.table_randomizer
+    if args.floor_randomizer is not None:
+        env_kwargs["floor_randomizer"] = args.floor_randomizer
     env: BaseEnv = gym.make(
         args.env_id,
         **env_kwargs

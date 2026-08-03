@@ -51,7 +51,10 @@ from .randomization import (
     Randomizer,
 )
 from .randomization.object_randomizer import CompositeObjectRandomizer
-from .randomization.table_randomizer import resolve_table_randomizer
+from .randomization.table_randomizer import (
+    resolve_floor_randomizer,
+    resolve_table_randomizer,
+)
 
 
 @register_env("PickAnything-v1", max_episode_steps=50)
@@ -70,6 +73,7 @@ class PickAnythingEnv(BaseEnv):
         object_sources: Optional[Sequence[Union[ObjectSource, str]]] = None,
         object_randomizer: Optional[Randomizer] = None,
         table_randomizer: Optional[Union[Randomizer, str, Sequence[str]]] = None,
+        floor_randomizer: Optional[Union[Randomizer, str]] = None,
         lighting_randomizer: Optional[Randomizer] = None,
         **kwargs,
     ):
@@ -98,6 +102,11 @@ class PickAnythingEnv(BaseEnv):
         self.table_randomizer = resolve_table_randomizer(
             table_randomizer if table_randomizer is not None else "wood",
             robot_init_qpos_noise=robot_init_qpos_noise,
+        )
+        # floor: "texture" (default, InternDataAssets floor_textures +
+        # background_textures) / "grid" (checkered, no download) / a Randomizer.
+        self.floor_randomizer = resolve_floor_randomizer(
+            floor_randomizer if floor_randomizer is not None else "texture"
         )
         self.lighting_randomizer = lighting_randomizer or HDRILightingRandomizer()
         if reconfiguration_freq is None:
@@ -133,6 +142,7 @@ class PickAnythingEnv(BaseEnv):
     # ------------------------------------------------------------------ #
     def _load_scene(self, options: dict):
         self.table_randomizer.on_reconfigure(self, options)
+        self.floor_randomizer.on_reconfigure(self, options)
         self.object_randomizer.on_reconfigure(self, options)
 
     def _load_lighting(self, options: dict):
@@ -142,11 +152,13 @@ class PickAnythingEnv(BaseEnv):
         # post-build measurement (e.g. object resting heights from collision
         # meshes) before the first episode initializes.
         self.table_randomizer.on_after_reconfigure(self, options)
+        self.floor_randomizer.on_after_reconfigure(self, options)
         self.object_randomizer.on_after_reconfigure(self, options)
         self.lighting_randomizer.on_after_reconfigure(self, options)
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         self.table_randomizer.on_initialize_episode(self, env_idx, options)
+        self.floor_randomizer.on_initialize_episode(self, env_idx, options)
         self.object_randomizer.on_initialize_episode(self, env_idx, options)
         self.lighting_randomizer.on_initialize_episode(self, env_idx, options)
 

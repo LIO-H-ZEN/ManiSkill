@@ -1,11 +1,12 @@
-"""Table / surface randomizers for PickAnything.
+"""Table randomizers for PickAnything.
 
-All randomizers keep the real legged PickCube ``table.glb`` silhouette (tabletop
-+ legs, top at z=0); they differ only in how they randomize the table's
-**surface**:
+All table randomizers keep the real legged PickCube ``table.glb`` silhouette
+(tabletop + legs, top at z=0); they differ only in the table's **surface
+material**. The **ground/floor** is a separate axis --- see
+:class:`FloorRandomizer` (and ``floor_randomizer`` on the env).
 
-- :class:`WoodTableRandomizer` --- fixed wood (the faithful PickCube table via
-  :class:`TableSceneBuilder`).
+- :class:`WoodTableRandomizer` --- fixed wood (keeps ``table.glb``'s own wood
+  material).
 - :class:`ProceduralTableRandomizer` --- randomized PBR params (base color +
   metallic + roughness) across material types (metal / glossy / matte). No
   download; this is the zero-download material-variety option.
@@ -31,38 +32,8 @@ from transforms3d.euler import euler2quat
 
 from mani_skill import ASSET_DIR
 from mani_skill.utils.building.ground import build_ground
-from mani_skill.utils.scene_builder.table import TableSceneBuilder
 
 from .base import Randomizer
-
-
-class WoodTableRandomizer(Randomizer):
-    """The fixed wood PickCube table, via :class:`TableSceneBuilder`.
-
-    This is the faithful PickCube surface: ``table.glb`` scaled so the top sits
-    at z=0, plus the robot-init-qpos logic that ``TableSceneBuilder.initialize``
-    owns. ``on_initialize_episode`` delegates to ``table_scene.initialize`` ---
-    which sets the table pose **and** resets the robot --- so the env itself does
-    not need separate robot-init code.
-
-    The wood texture is fixed (PBR swap is the procedural randomizer below /
-    a future texture step); this randomizer is about giving PickAnything the
-    same realistic wood table PickCube has.
-    """
-
-    def __init__(self, robot_init_qpos_noise: float = 0.02):
-        self.robot_init_qpos_noise = robot_init_qpos_noise
-
-    def on_reconfigure(self, env, options: dict) -> None:
-        env.table_scene = TableSceneBuilder(
-            env, robot_init_qpos_noise=self.robot_init_qpos_noise
-        )
-        env.table_scene.build()
-        env.table = env.table_scene.table
-
-    def on_initialize_episode(self, env, env_idx, options: dict) -> None:
-        # sets table pose + robot init qpos/pose (PickCube behavior)
-        env.table_scene.initialize(env_idx)
 
 
 # PBR parameter ranges per material type. metal = high metallic, low roughness;
@@ -82,11 +53,8 @@ class _RealTableRandomizer(Randomizer):
     Subclasses implement :meth:`_apply_visual` to override the glb's per-part
     materials (texture, PBR params, ...). The table is kinematic, top at z=0,
     shared across parallel envs; robot init is owned by the env, not the
-    randomizer.
-
-    If ``floor_texture_source`` is set, the ground is built with a sampled
-    InternDataAssets floor texture (via ``build_ground(texture_file=...)``)
-    instead of the default checkered grid; otherwise the grid floor is used.
+    randomizer. The **ground is not built here** --- it is a separate axis
+    (:class:`FloorRandomizer`).
     """
 
     # PickCube table geometry --- mirrors
@@ -98,13 +66,8 @@ class _RealTableRandomizer(Randomizer):
     _TABLE_HALF = (2.418 / 2, 1.209 / 2, 0.9196429 / 2)
     _TABLE_OFFSET = (-0.12, 0, -0.9196429)
 
-    def __init__(
-        self,
-        robot_init_qpos_noise: float = 0.02,
-        floor_texture_source: Optional["TableTextureSource"] = None,
-    ):
+    def __init__(self, robot_init_qpos_noise: float = 0.02):
         self.robot_init_qpos_noise = robot_init_qpos_noise
-        self.floor_texture_source = floor_texture_source
 
     @staticmethod
     def _table_glb_path() -> str:
@@ -182,22 +145,25 @@ class _RealTableRandomizer(Randomizer):
         env.table = builder.build_kinematic(name="table-workspace")
 
         self._apply_visual(env.table)
-
-        floor_width = 500 if env.scene.parallel_in_single_scene else 100
-        ground_kwargs = dict(floor_width=floor_width, altitude=-(self._TABLE_H))
-        env.floor_texture = None
-        if self.floor_texture_source is not None:
-            # sample a floor texture from env 0's RNG (continues the slice the
-            # subclass already consumed for the table sample)
-            floor_tex = self.floor_texture_source.get_texture(
-                env._batched_episode_rng[0]
-            )
-            ground_kwargs["texture_file"] = floor_tex
-            env.floor_texture = os.path.basename(floor_tex)
-        env.ground = build_ground(env.scene, **ground_kwargs)
+        # the ground is built by the (separate) floor randomizer
 
     def on_initialize_episode(self, env, env_idx, options: dict) -> None:
         pass  # static kinematic table (pose set at build); env owns robot init
+
+
+class WoodTableRandomizer(_RealTableRandomizer):
+    """The fixed wood PickCube table.
+
+    Reuses ``table.glb`` via :meth:`_build_table` but does **not** override the
+    visual, so the glb's own wood material is kept. The ground is built by the
+    floor randomizer.
+    """
+
+    def _apply_visual(self, table) -> None:
+        pass  # keep the glb's original wood material
+
+    def on_reconfigure(self, env, options: dict) -> None:
+        self._build_table(env, physx_mat=None)
 
 
 class ProceduralTableRandomizer(_RealTableRandomizer):
@@ -214,12 +180,8 @@ class ProceduralTableRandomizer(_RealTableRandomizer):
         self,
         robot_init_qpos_noise: float = 0.02,
         material_types: list[str] | None = None,
-        floor_texture_source: Optional["TableTextureSource"] = None,
     ):
-        super().__init__(
-            robot_init_qpos_noise=robot_init_qpos_noise,
-            floor_texture_source=floor_texture_source,
-        )
+        super().__init__(robot_init_qpos_noise=robot_init_qpos_noise)
         self.material_types = list(material_types) if material_types else list(
             MATERIAL_PRESETS
         )
@@ -472,11 +434,6 @@ class TextureTableRandomizer(_RealTableRandomizer):
     for sim2real (a wood-grain table may be slippery or grippy).
 
     One texture + one friction set are drawn per reconfigure (env 0's RNG).
-
-    By default the **floor** is also textured: ``floor_texture_source`` defaults
-    to a pool of ``floor_textures`` + ``background_textures`` (floor-appropriate
-    surface materials), sampled independently per reconfigure. Pass
-    ``floor_texture_source=None`` for the default checkered grid floor.
     """
 
     def __init__(
@@ -487,16 +444,8 @@ class TextureTableRandomizer(_RealTableRandomizer):
         dynamic_friction=(0.2, 0.6),
         restitution=(0.0, 0.05),
         roughness: float = 0.85,
-        floor_texture_source: Optional[TableTextureSource] = None,
     ):
-        super().__init__(
-            robot_init_qpos_noise=robot_init_qpos_noise,
-            floor_texture_source=floor_texture_source
-            if floor_texture_source is not None
-            else TableTextureSource(
-                subdir=["floor_textures", "background_textures"]
-            ),
-        )
+        super().__init__(robot_init_qpos_noise=robot_init_qpos_noise)
         self.texture_source = texture_source or TableTextureSource()
         self.static_friction = static_friction
         self.dynamic_friction = dynamic_friction
@@ -559,8 +508,9 @@ class CompositeTableRandomizer(Randomizer):
         self._current = self.randomizers[int(rng.randint(0, len(self.randomizers)))]
         env.table_randomizer_choice = type(self._current).__name__  # debug
         # clear per-strategy debug attrs so they reflect the current choice, not
-        # whichever randomizer ran on the previous reconfigure
-        for a in ("table_texture", "table_friction", "table_material_type", "floor_texture"):
+        # whichever randomizer ran on the previous reconfigure (floor_texture is
+        # owned by the floor randomizer, not cleared here)
+        for a in ("table_texture", "table_friction", "table_material_type"):
             if hasattr(env, a):
                 setattr(env, a, None)
         self._current.on_reconfigure(env, options)
@@ -604,5 +554,67 @@ def resolve_table_randomizer(
         )
     raise TypeError(
         f"table randomizer must be a Randomizer, string alias, or list of them; "
+        f"got {obj!r}"
+    )
+
+
+# ---------------------------------------------------------------------------- #
+# Floor (ground) randomizer --- a separate axis from the table
+# ---------------------------------------------------------------------------- #
+class FloorRandomizer(Randomizer):
+    """Builds the ground plane, optionally with a sampled floor texture.
+
+    Independent of the table randomizer: the table randomizer builds only the
+    table; this builds the ground at ``altitude = -table_height`` (below the
+    ``table.glb``). With a ``texture_source``, the ground uses a sampled
+    InternDataAssets floor texture (via ``build_ground(texture_file=...)``);
+    without one it uses the default checkered grid.
+
+    The ground is static and shared across parallel envs; one texture is drawn
+    per reconfigure (env 0's RNG).
+    """
+
+    # below the table.glb (table height = 0.9196429); mirrors TableSceneBuilder
+    _FLOOR_ALTITUDE = -0.9196429
+
+    def __init__(self, texture_source: Optional[TableTextureSource] = None):
+        self.texture_source = texture_source  # None -> checkered grid
+
+    def on_reconfigure(self, env, options: dict) -> None:
+        env.floor_texture = None
+        kwargs = {}
+        if self.texture_source is not None:
+            tex = self.texture_source.get_texture(env._batched_episode_rng[0])
+            kwargs["texture_file"] = tex
+            env.floor_texture = os.path.basename(tex)
+        floor_width = 500 if env.scene.parallel_in_single_scene else 100
+        env.ground = build_ground(
+            env.scene, floor_width=floor_width, altitude=self._FLOOR_ALTITUDE, **kwargs
+        )
+
+    def on_initialize_episode(self, env, env_idx, options: dict) -> None:
+        pass  # static ground; pose set at build
+
+
+# String alias -> floor randomizer. "grid" = checkered grid (no download);
+# "texture" = InternDataAssets floor textures (floor_textures + background_textures).
+def resolve_floor_randomizer(obj) -> Randomizer:
+    if isinstance(obj, Randomizer):
+        return obj
+    if isinstance(obj, str):
+        key = obj.lower()
+        if key in ("grid", "default", "none"):
+            return FloorRandomizer(texture_source=None)
+        if key in ("texture", "textures", "interndata"):
+            return FloorRandomizer(
+                texture_source=TableTextureSource(
+                    subdir=["floor_textures", "background_textures"]
+                )
+            )
+        raise ValueError(
+            f"Unknown floor randomizer '{obj}'. Valid: grid, texture."
+        )
+    raise TypeError(
+        f"floor randomizer must be a Randomizer or string alias (grid/texture); "
         f"got {obj!r}"
     )

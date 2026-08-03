@@ -2,11 +2,12 @@
 
 A pick task with **composable domain randomization**. Same pick task as
 `PickCube` / `PickSingleYCB` (grasp an object, move it to a goal), but every
-diversity axis - object, table, lighting - is delegated to a pluggable
+diversity axis - object, table, floor, lighting - is delegated to a pluggable
 `Randomizer`. Objects are sampled from a **candidate set** that mixes a
 procedural cube, the cached YCB dataset, and InternDataAssets meshes; the table
-surface is randomized too (fixed wood, real InternDataAssets table textures, or
-procedural PBR).
+surface (fixed wood, real InternDataAssets table textures, or procedural PBR)
+and the floor (InternDataAssets floor textures or checkered grid) are each
+randomized on their own axis.
 
 ## Why
 
@@ -131,26 +132,47 @@ gym.make("PickAnything-v1", table_randomizer=TextureTableRandomizer(
 ))
 ```
 
-**Floor textures.** In `texture` mode the floor is also textured by default:
-`floor_texture_source` pools `floor_textures` + `background_textures`
-(floor-appropriate surface materials), sampled independently per reconfigure via
-`build_ground(texture_file=...)`. `wood` and `procedural` keep the default
-checkered grid floor. Customize or disable:
+The per-episode debug attrs (`env.table_texture`, `env.table_friction`,
+`env.table_material_type`) reflect the current table choice.
 
-```python
-gym.make("PickAnything-v1", table_randomizer=TextureTableRandomizer(
-    floor_texture_source=None,  # grid floor
-    # or a custom pool:
-    # floor_texture_source=TableTextureSource(subdir=["floor_textures"]),
-))
-# procedural table + textured floor (opt-in):
-gym.make("PickAnything-v1", table_randomizer=ProceduralTableRandomizer(
-    floor_texture_source=TableTextureSource(subdir=["floor_textures", "background_textures"]),
+## Floor randomizer (texture / grid)
+
+The floor is a **separate axis** from the table (`floor_randomizer`), so any
+table mode pairs with any floor. `FloorRandomizer` builds the ground at
+`altitude = -table_height` (below `table.glb`); with a texture it samples an
+InternDataAssets floor texture via `build_ground(texture_file=...)`, otherwise it
+uses the default checkered grid.
+
+| Alias | Floor | Needs download? |
+|-------|-------|-----------------|
+| `texture` | random InternDataAssets floor texture (`floor_textures` + `background_textures`) | on demand (gated HF repo) |
+| `grid` | checkered grid (ManiSkill default) | no |
+
+**Default** = `texture`.
+
+```bash
+# default (wood table + textured floor)
+python -m mani_skill.examples.demo_random_action -e PickAnything-v1 --render-mode="human"
+
+# wood table + grid floor (no download)
+python -m mani_skill.examples.demo_random_action -e PickAnything-v1 \
+    --render-mode="human" --table-randomizer wood --floor-randomizer grid
+
+# textured table + textured floor (sampled independently)
+python -m mani_skill.examples.demo_random_action -e PickAnything-v1 \
+    --render-mode="human" --table-randomizer texture --floor-randomizer texture
+
+# code
+gym.make("PickAnything-v1", floor_randomizer="grid")
+from mani_skill.envs.tasks.pick_anything.randomization import (
+    FloorRandomizer, TableTextureSource,
+)
+gym.make("PickAnything-v1", floor_randomizer=FloorRandomizer(
+    texture_source=TableTextureSource(subdir=["floor_textures"]),
 ))
 ```
 
-The per-episode debug attrs (`env.table_texture`, `env.floor_texture`,
-`env.table_friction`, `env.table_material_type`) reflect the current choice.
+`env.floor_texture` exposes the sampled floor texture per reconfigure.
 
 **Texture → friction is decoupled.** The dataset ships no PBR/physics metadata,
 so `texture` attaches a randomized `PhysxMaterial` to the table collision
@@ -212,13 +234,14 @@ writes `.complete` markers, and writes the category/instance manifests - so afte
 it finishes the `interndata` source is **fully offline** (no HF API calls).
 It is **re-runnable**: interrupted runs can be restarted; already-cached
 files/markers are skipped. (The bulk script covers **objects**; the 12 table
-textures are tiny and download on demand - no bulk step needed for them.)
+textures + floor textures are small and download on demand - no bulk step
+needed for them.)
 
 ## Run
 
 ```bash
-# GUI: watch object / table / lighting change each episode (defaults: cube+ycb+
-# interndata objects, wood table)
+# GUI: watch object / table / floor / lighting change each episode (defaults:
+# cube+ycb+interndata objects, wood table, textured floor)
 python -m mani_skill.examples.demo_random_action -e PickAnything-v1 --render-mode="human"
 
 # different seed -> different episode
@@ -228,10 +251,15 @@ python -m mani_skill.examples.demo_random_action -e PickAnything-v1 --render-mod
 python -m mani_skill.examples.demo_random_action -e PickAnything-v1 \
     --render-mode="human" --table-randomizer texture
 
-# mix table strategies + restrict to no-download objects
+# fully no-download: cube+ycb objects, wood table, grid floor
 python -m mani_skill.examples.demo_random_action -e PickAnything-v1 \
     --render-mode="human" --object-sources cube ycb \
-    --table-randomizer wood texture procedural
+    --table-randomizer wood --floor-randomizer grid
+
+# mix table strategies + textured floor
+python -m mani_skill.examples.demo_random_action -e PickAnything-v1 \
+    --render-mode="human" --object-sources cube ycb \
+    --table-randomizer wood texture procedural --floor-randomizer texture
 
 # RGB obs (works on compute cards - default raster shader needs no RT cores)
 python -m mani_skill.examples.demo_random_action -e PickAnything-v1 -o rgbd --render-mode="human"

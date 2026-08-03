@@ -11,10 +11,12 @@ from .object_sources import (
 )
 from .table_randomizer import (
     CompositeTableRandomizer,
+    FloorRandomizer,
     ProceduralTableRandomizer,
     TableTextureSource,
     TextureTableRandomizer,
     WoodTableRandomizer,
+    resolve_floor_randomizer,
     resolve_table_randomizer,
 )
 
@@ -36,6 +38,9 @@ __all__ = [
     "TableTextureSource",
     "resolve_table_randomizer",
     "ProceduralTableRandomizer",
+    # floor
+    "FloorRandomizer",
+    "resolve_floor_randomizer",
     # lighting
     "HDRILightingRandomizer",
 ]
