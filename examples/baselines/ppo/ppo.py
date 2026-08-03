@@ -94,6 +94,13 @@ class Args:
     (cube/ycb/interndata). None uses the env default. Pass e.g.
     `--object-sources cube ycb` to skip InternDataAssets mesh downloads during
     large-batch training."""
+    table_randomizer: Optional[List[str]] = None
+    """PickAnything only: table randomizer alias, or a list to mix per
+    reconfigure. `wood` (default) / `texture` (InternDataAssets table textures +
+    random friction) / `procedural` (random PBR). `texture` downloads textures."""
+    floor_randomizer: Optional[str] = None
+    """PickAnything only: floor randomizer alias. `texture` (default,
+    InternDataAssets floor textures) / `grid` (checkered, no download)."""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.8
@@ -220,6 +227,10 @@ if __name__ == "__main__":
         env_kwargs["control_mode"] = args.control_mode
     if args.object_sources is not None:
         env_kwargs["object_sources"] = args.object_sources
+    if args.table_randomizer is not None:
+        env_kwargs["table_randomizer"] = args.table_randomizer
+    if args.floor_randomizer is not None:
+        env_kwargs["floor_randomizer"] = args.floor_randomizer
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
     if isinstance(envs.action_space, gym.spaces.Dict):

@@ -94,8 +94,14 @@ python -m mani_skill.examples.verify_pick_anything --rgb
 
 ## Train / evaluate (PPO)
 
+`ppo.py` accepts the same PickAnything flags as the demo (`--object-sources`,
+`--table-randomizer`, `--floor-randomizer`); `None` uses the env default.
+
 ```bash
-bash examples/baselines/ppo/run_state_rl.sh   # state RL, cube+ycb (no download)
+bash examples/baselines/ppo/run_state_rl.sh   # state RL (cube+ycb+interndata)
+# fully no-download training:
+python examples/baselines/ppo/ppo.py --env_id="PickAnything-v1" --num_envs=2048 \
+    --object-sources cube ycb --table-randomizer wood --floor-randomizer grid
 # eval videos are tagged with the episode's object source: 1_ycb.mp4, 2_cube.mp4, 3_interndata.mp4
 python examples/baselines/ppo/ppo.py --env_id="PickAnything-v1" \
     --evaluate --checkpoint=path/to/model.pt --num_eval_envs=1 --num-eval-steps=1000
