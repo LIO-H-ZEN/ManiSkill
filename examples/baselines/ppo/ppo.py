@@ -96,8 +96,9 @@ class Args:
     large-batch training."""
     table_randomizer: Optional[List[str]] = None
     """PickAnything only: table randomizer alias, or a list to mix per
-    reconfigure. `wood` (default) / `texture` (InternDataAssets table textures +
-    random friction) / `procedural` (random PBR). `texture` downloads textures."""
+    reconfigure. `wood` / `texture` (InternDataAssets table textures + random
+    friction) / `procedural` (random PBR). None uses the env default
+    (wood + texture mix). `texture` downloads textures."""
     floor_randomizer: Optional[str] = None
     """PickAnything only: floor randomizer alias. `texture` (default,
     InternDataAssets floor textures) / `grid` (checkered, no download)."""

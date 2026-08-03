@@ -65,11 +65,10 @@ class Args:
 
     table_randomizer: Optional[List[str]] = None
     """PickAnything only: table surface randomizer alias, or a list of them to
-    mix per reconfigure. `wood` = fixed PickCube wood table (default);
-    `texture` = real InternDataAssets table-surface texture + random friction;
-    `procedural` = random PBR color/metallic/roughness. Pass multiple to mix,
-    e.g. `--table-randomizer wood texture` picks one each reconfigure. `texture`
-    downloads textures on demand (gated HF dataset)."""
+    mix per reconfigure. `wood` = fixed PickCube wood table; `texture` = real
+    InternDataAssets table-surface texture + random friction; `procedural` =
+    random PBR color/metallic/roughness. None uses the env default
+    (wood + texture mix). `texture` downloads textures on demand (gated HF)."""
 
     floor_randomizer: Optional[str] = None
     """PickAnything only: floor (ground) randomizer alias. `texture` (default) =

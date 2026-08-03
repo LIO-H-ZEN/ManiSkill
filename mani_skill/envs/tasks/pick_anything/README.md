@@ -9,7 +9,7 @@ randomization. Four independent axes, each a pluggable `Randomizer`:
 | Flag | Values | Default | Multi? |
 |------|--------|---------|--------|
 | `--object-sources` | `cube` `ycb` `interndata` | all three | yes (space-sep) |
-| `--table-randomizer` | `wood` `texture` `procedural` | `wood` | yes |
+| `--table-randomizer` | `wood` `texture` `procedural` | `wood` + `texture` (mix) | yes |
 | `--floor-randomizer` | `texture` `grid` | `texture` | no |
 
 Multi-value axes pick one value per reconfigure. Lighting randomizes by default

@@ -95,12 +95,12 @@ class PickAnythingEnv(BaseEnv):
             self.object_randomizer = CompositeObjectRandomizer(
                 sources, goal_thresh=self.goal_thresh
             )
-        # table: "wood" (default, fixed PickCube wood) / "texture" (random
-        # InternDataAssets table_textures + randomized friction) / "procedural"
-        # (PBR color) / a Randomizer instance / a list of aliases to mix per
-        # reconfigure (e.g. ["wood","texture"]).
+        # table: "wood" (fixed PickCube wood) / "texture" (random InternDataAssets
+        # table textures + randomized friction) / "procedural" (PBR color) / a
+        # Randomizer instance / a list of aliases to mix per reconfigure. Default
+        # ["wood","texture"] mixes wood and textured tables per reconfigure.
         self.table_randomizer = resolve_table_randomizer(
-            table_randomizer if table_randomizer is not None else "wood",
+            table_randomizer if table_randomizer is not None else ["wood", "texture"],
             robot_init_qpos_noise=robot_init_qpos_noise,
         )
         # floor: "texture" (default, InternDataAssets floor_textures +
