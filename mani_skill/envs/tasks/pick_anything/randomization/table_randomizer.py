@@ -83,6 +83,10 @@ class _RealTableRandomizer(Randomizer):
     materials (texture, PBR params, ...). The table is kinematic, top at z=0,
     shared across parallel envs; robot init is owned by the env, not the
     randomizer.
+
+    If ``floor_texture_source`` is set, the ground is built with a sampled
+    InternDataAssets floor texture (via ``build_ground(texture_file=...)``)
+    instead of the default checkered grid; otherwise the grid floor is used.
     """
 
     # PickCube table geometry --- mirrors
@@ -94,8 +98,13 @@ class _RealTableRandomizer(Randomizer):
     _TABLE_HALF = (2.418 / 2, 1.209 / 2, 0.9196429 / 2)
     _TABLE_OFFSET = (-0.12, 0, -0.9196429)
 
-    def __init__(self, robot_init_qpos_noise: float = 0.02):
+    def __init__(
+        self,
+        robot_init_qpos_noise: float = 0.02,
+        floor_texture_source: Optional["TableTextureSource"] = None,
+    ):
         self.robot_init_qpos_noise = robot_init_qpos_noise
+        self.floor_texture_source = floor_texture_source
 
     @staticmethod
     def _table_glb_path() -> str:
@@ -175,9 +184,17 @@ class _RealTableRandomizer(Randomizer):
         self._apply_visual(env.table)
 
         floor_width = 500 if env.scene.parallel_in_single_scene else 100
-        env.ground = build_ground(
-            env.scene, floor_width=floor_width, altitude=-(self._TABLE_H)
-        )
+        ground_kwargs = dict(floor_width=floor_width, altitude=-(self._TABLE_H))
+        env.floor_texture = None
+        if self.floor_texture_source is not None:
+            # sample a floor texture from env 0's RNG (continues the slice the
+            # subclass already consumed for the table sample)
+            floor_tex = self.floor_texture_source.get_texture(
+                env._batched_episode_rng[0]
+            )
+            ground_kwargs["texture_file"] = floor_tex
+            env.floor_texture = os.path.basename(floor_tex)
+        env.ground = build_ground(env.scene, **ground_kwargs)
 
     def on_initialize_episode(self, env, env_idx, options: dict) -> None:
         pass  # static kinematic table (pose set at build); env owns robot init
@@ -197,8 +214,12 @@ class ProceduralTableRandomizer(_RealTableRandomizer):
         self,
         robot_init_qpos_noise: float = 0.02,
         material_types: list[str] | None = None,
+        floor_texture_source: Optional["TableTextureSource"] = None,
     ):
-        super().__init__(robot_init_qpos_noise=robot_init_qpos_noise)
+        super().__init__(
+            robot_init_qpos_noise=robot_init_qpos_noise,
+            floor_texture_source=floor_texture_source,
+        )
         self.material_types = list(material_types) if material_types else list(
             MATERIAL_PRESETS
         )
@@ -451,6 +472,11 @@ class TextureTableRandomizer(_RealTableRandomizer):
     for sim2real (a wood-grain table may be slippery or grippy).
 
     One texture + one friction set are drawn per reconfigure (env 0's RNG).
+
+    By default the **floor** is also textured: ``floor_texture_source`` defaults
+    to a pool of ``floor_textures`` + ``background_textures`` (floor-appropriate
+    surface materials), sampled independently per reconfigure. Pass
+    ``floor_texture_source=None`` for the default checkered grid floor.
     """
 
     def __init__(
@@ -461,8 +487,16 @@ class TextureTableRandomizer(_RealTableRandomizer):
         dynamic_friction=(0.2, 0.6),
         restitution=(0.0, 0.05),
         roughness: float = 0.85,
+        floor_texture_source: Optional[TableTextureSource] = None,
     ):
-        super().__init__(robot_init_qpos_noise=robot_init_qpos_noise)
+        super().__init__(
+            robot_init_qpos_noise=robot_init_qpos_noise,
+            floor_texture_source=floor_texture_source
+            if floor_texture_source is not None
+            else TableTextureSource(
+                subdir=["floor_textures", "background_textures"]
+            ),
+        )
         self.texture_source = texture_source or TableTextureSource()
         self.static_friction = static_friction
         self.dynamic_friction = dynamic_friction
@@ -526,7 +560,7 @@ class CompositeTableRandomizer(Randomizer):
         env.table_randomizer_choice = type(self._current).__name__  # debug
         # clear per-strategy debug attrs so they reflect the current choice, not
         # whichever randomizer ran on the previous reconfigure
-        for a in ("table_texture", "table_friction", "table_material_type"):
+        for a in ("table_texture", "table_friction", "table_material_type", "floor_texture"):
             if hasattr(env, a):
                 setattr(env, a, None)
         self._current.on_reconfigure(env, options)

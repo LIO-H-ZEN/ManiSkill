@@ -156,6 +156,9 @@ def main(args: Args):
             fric = getattr(uw, "table_friction", None)
             if fric is not None:
                 bits.append(f"friction={fric}")
+            ftex = getattr(uw, "floor_texture", None)
+            if ftex is not None:
+                bits.append(f"floor={ftex}")
             if bits:
                 print(f"[ep {ep}] " + " ".join(bits))
         while True:

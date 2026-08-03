@@ -108,13 +108,13 @@ gym.make("PickAnything-v1", table_randomizer=["wood", "texture", "procedural"])
 **InternDataAssets texture folders used.** Despite some folder names, the
 content differs a lot — only some are real table surfaces:
 
-| Folder | Count | Content | Used? |
-|--------|-------|---------|-------|
-| `dark_table_textures` | ~7 | real dark table surfaces | **yes (default pool)** |
-| `light_table_textures` | ~5 | real light table surfaces | **yes (default pool)** |
-| `background_textures` | ~101 | real surface materials, but a mix (wood/marble/concrete/brick/carpet — some read as floor) | optional (add for more variety) |
-| `floor_textures` | ~16 | subset of `background_textures` | optional |
-| `table_textures` | ~896 | **COCO-style photos** (people/food/objects), *not* surfaces | **no** (name is misleading) |
+| Folder | Count | Content | Used for |
+|--------|-------|---------|----------|
+| `dark_table_textures` | ~7 | real dark table surfaces | **table** (default pool) |
+| `light_table_textures` | ~5 | real light table surfaces | **table** (default pool) |
+| `background_textures` | ~101 | real surface materials, a mix (wood/marble/concrete/brick/carpet) | **floor** (default pool); optional extra for the table |
+| `floor_textures` | ~16 | real floor surface materials | **floor** (default pool) |
+| `table_textures` | ~896 | **COCO-style photos** (people/food/objects), *not* surfaces | **nothing** (name is misleading) |
 
 The `texture` source defaults to pooling `dark_table_textures` +
 `light_table_textures` (12 genuine tabletop surfaces). Add `background_textures`
@@ -130,6 +130,27 @@ gym.make("PickAnything-v1", table_randomizer=TextureTableRandomizer(
     ),
 ))
 ```
+
+**Floor textures.** In `texture` mode the floor is also textured by default:
+`floor_texture_source` pools `floor_textures` + `background_textures`
+(floor-appropriate surface materials), sampled independently per reconfigure via
+`build_ground(texture_file=...)`. `wood` and `procedural` keep the default
+checkered grid floor. Customize or disable:
+
+```python
+gym.make("PickAnything-v1", table_randomizer=TextureTableRandomizer(
+    floor_texture_source=None,  # grid floor
+    # or a custom pool:
+    # floor_texture_source=TableTextureSource(subdir=["floor_textures"]),
+))
+# procedural table + textured floor (opt-in):
+gym.make("PickAnything-v1", table_randomizer=ProceduralTableRandomizer(
+    floor_texture_source=TableTextureSource(subdir=["floor_textures", "background_textures"]),
+))
+```
+
+The per-episode debug attrs (`env.table_texture`, `env.floor_texture`,
+`env.table_friction`, `env.table_material_type`) reflect the current choice.
 
 **Texture → friction is decoupled.** The dataset ships no PBR/physics metadata,
 so `texture` attaches a randomized `PhysxMaterial` to the table collision
