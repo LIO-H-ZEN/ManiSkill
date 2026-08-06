@@ -75,6 +75,11 @@ class Args:
     InternDataAssets floor textures (floor_textures + background_textures);
     `grid` = checkered grid (no download). Independent of the table."""
 
+    clutter: int = 0
+    """PickAnything only: number of distractor objects per env (clutter). 0
+    (default) = no distractors. Distractors reuse the object-sources pool and
+    are placed on the table avoiding the target. Orthogonal to all other axes."""
+
     num_episodes: int = 1
     """Number of episodes to run in non-human render mode (each reconfigures,
     re-randomizing PickAnything object/table/lighting). In human render mode the
@@ -120,6 +125,8 @@ def main(args: Args):
         env_kwargs["table_randomizer"] = args.table_randomizer
     if args.floor_randomizer is not None:
         env_kwargs["floor_randomizer"] = args.floor_randomizer
+    if args.clutter and args.clutter > 0:
+        env_kwargs["clutter"] = args.clutter
     env: BaseEnv = gym.make(
         args.env_id,
         **env_kwargs

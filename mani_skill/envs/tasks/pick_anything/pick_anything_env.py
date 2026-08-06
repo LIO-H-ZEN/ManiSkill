@@ -50,6 +50,7 @@ from .randomization import (
     ObjectSource,
     Randomizer,
 )
+from .randomization.clutter_randomizer import ClutterRandomizer
 from .randomization.object_randomizer import CompositeObjectRandomizer
 from .randomization.table_randomizer import (
     resolve_floor_randomizer,
@@ -74,24 +75,25 @@ class PickAnythingEnv(BaseEnv):
         object_randomizer: Optional[Randomizer] = None,
         table_randomizer: Optional[Union[Randomizer, str, Sequence[str]]] = None,
         floor_randomizer: Optional[Union[Randomizer, str]] = None,
+        clutter: Optional[Union[int, ClutterRandomizer]] = None,
         lighting_randomizer: Optional[Randomizer] = None,
         **kwargs,
     ):
         self.robot_init_qpos_noise = robot_init_qpos_noise
+        # the object source pool (reused by the clutter randomizer below).
+        sources = list(object_sources) if object_sources else [
+            "cube",
+            "ycb",
+            "interndata",
+        ]
         # build randomizers before super().__init__ (they only hold config; they
         # touch the env later via their hooks).
         if object_randomizer is not None:
             self.object_randomizer = object_randomizer
         else:
-            # default candidate set: procedural cube + cached YCB + InternDataAssets
-            # meshes. interndata is a gated HF dataset --- it needs
+            # interndata is a gated HF dataset --- it needs
             # `huggingface-cli login` + license acceptance and downloads meshes on
             # first use; pass object_sources=["cube","ycb"] for a no-download default.
-            sources = list(object_sources) if object_sources else [
-                "cube",
-                "ycb",
-                "interndata",
-            ]
             self.object_randomizer = CompositeObjectRandomizer(
                 sources, goal_thresh=self.goal_thresh
             )
@@ -108,6 +110,21 @@ class PickAnythingEnv(BaseEnv):
         self.floor_randomizer = resolve_floor_randomizer(
             floor_randomizer if floor_randomizer is not None else "texture"
         )
+        # clutter: int N (N distractors per env, reusing the object source pool) /
+        # a ClutterRandomizer / None (0 = no distractors, the default). Orthogonal
+        # to the other axes; distractors are physical but not in the state obs.
+        if clutter is None or (isinstance(clutter, int) and clutter <= 0):
+            self.clutter_randomizer = None
+        elif isinstance(clutter, int):
+            self.clutter_randomizer = ClutterRandomizer(
+                num_clutter=clutter, sources=sources
+            )
+        elif isinstance(clutter, ClutterRandomizer):
+            self.clutter_randomizer = clutter
+        else:
+            raise TypeError(
+                f"clutter must be an int, ClutterRandomizer, or None; got {clutter!r}"
+            )
         self.lighting_randomizer = lighting_randomizer or HDRILightingRandomizer()
         if reconfiguration_freq is None:
             # single env: reconfigure (and thus re-randomize geometry) every
@@ -144,6 +161,8 @@ class PickAnythingEnv(BaseEnv):
         self.table_randomizer.on_reconfigure(self, options)
         self.floor_randomizer.on_reconfigure(self, options)
         self.object_randomizer.on_reconfigure(self, options)
+        if self.clutter_randomizer is not None:
+            self.clutter_randomizer.on_reconfigure(self, options)
 
     def _load_lighting(self, options: dict):
         self.lighting_randomizer.on_reconfigure(self, options)
@@ -154,12 +173,17 @@ class PickAnythingEnv(BaseEnv):
         self.table_randomizer.on_after_reconfigure(self, options)
         self.floor_randomizer.on_after_reconfigure(self, options)
         self.object_randomizer.on_after_reconfigure(self, options)
+        if self.clutter_randomizer is not None:
+            self.clutter_randomizer.on_after_reconfigure(self, options)
         self.lighting_randomizer.on_after_reconfigure(self, options)
 
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         self.table_randomizer.on_initialize_episode(self, env_idx, options)
         self.floor_randomizer.on_initialize_episode(self, env_idx, options)
         self.object_randomizer.on_initialize_episode(self, env_idx, options)
+        # clutter placed after the target so it can avoid the target's pose
+        if self.clutter_randomizer is not None:
+            self.clutter_randomizer.on_initialize_episode(self, env_idx, options)
         self.lighting_randomizer.on_initialize_episode(self, env_idx, options)
 
         if self.robot_uids == "panda":

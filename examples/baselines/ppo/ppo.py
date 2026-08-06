@@ -102,6 +102,10 @@ class Args:
     floor_randomizer: Optional[str] = None
     """PickAnything only: floor randomizer alias. `texture` (default,
     InternDataAssets floor textures) / `grid` (checkered, no download)."""
+    clutter: int = 0
+    """PickAnything only: number of distractor objects per env (clutter). 0
+    (default) = none. Distractors reuse the object-sources pool, placed on the
+    table avoiding the target. Orthogonal to all other axes."""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.8
@@ -232,6 +236,8 @@ if __name__ == "__main__":
         env_kwargs["table_randomizer"] = args.table_randomizer
     if args.floor_randomizer is not None:
         env_kwargs["floor_randomizer"] = args.floor_randomizer
+    if args.clutter and args.clutter > 0:
+        env_kwargs["clutter"] = args.clutter
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
     if isinstance(envs.action_space, gym.spaces.Dict):

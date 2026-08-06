@@ -48,7 +48,7 @@ class ObjectSource:
     name: str = "object"
 
     def build_actor(
-        self, env, env_idx: int, rng: np.random.RandomState
+        self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None
     ) -> Actor:  # pragma: no cover - interface
         raise NotImplementedError
 
@@ -65,7 +65,7 @@ class CubeSource(ObjectSource):
         self.half_size_range = half_size_range
         self.color_range = color_range
 
-    def build_actor(self, env, env_idx: int, rng: np.random.RandomState) -> Actor:
+    def build_actor(self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None) -> Actor:
         hs = float(rng.uniform(*self.half_size_range))
         col = rng.uniform(*self.color_range, size=(3,))
         builder = env.scene.create_actor_builder()
@@ -78,7 +78,7 @@ class CubeSource(ObjectSource):
         )
         builder.initial_pose = sapien.Pose()
         builder.set_scene_idxs([env_idx])
-        return builder.build(name=f"cube-{env_idx}")
+        return builder.build(name=name or f"cube-{env_idx}")
 
 
 # ---------------------------------------------------------------------------- #
@@ -115,14 +115,14 @@ class YCBSource(ObjectSource):
             np.array(model_ids) if model_ids is not None else np.array(all_ids)
         )
 
-    def build_actor(self, env, env_idx: int, rng: np.random.RandomState) -> Actor:
+    def build_actor(self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None) -> Actor:
         from mani_skill.utils.building import actors
 
         model_id = str(rng.choice(self.model_ids))
         builder = actors.get_actor_builder(env.scene, id=f"ycb:{model_id}")
         builder.initial_pose = sapien.Pose()
         builder.set_scene_idxs([env_idx])
-        return builder.build(name=f"ycb-{model_id}-{env_idx}")
+        return builder.build(name=name or f"ycb-{model_id}-{env_idx}")
 
 
 # ---------------------------------------------------------------------------- #
@@ -410,7 +410,7 @@ class InternDataAssetsSource(ObjectSource):
         return self.unit_scale
 
     # -- build --------------------------------------------------------------- #
-    def build_actor(self, env, env_idx: int, rng: np.random.RandomState) -> Actor:
+    def build_actor(self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None) -> Actor:
         categories = self._list_categories()
         category = str(rng.choice(np.array(categories)))
         instances = self._list_category_instances(category)
@@ -426,7 +426,7 @@ class InternDataAssetsSource(ObjectSource):
         builder.add_visual_from_file(filename=obj_path, scale=[scale] * 3)
         builder.initial_pose = sapien.Pose()
         builder.set_scene_idxs([env_idx])
-        return builder.build(name=f"interndata-{instance}-{env_idx}")
+        return builder.build(name=name or f"interndata-{instance}-{env_idx}")
 
 
 # String alias -> source class, used by the env to accept simple config like
