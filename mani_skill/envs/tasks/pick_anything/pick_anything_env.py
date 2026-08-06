@@ -50,7 +50,7 @@ from .randomization import (
     ObjectSource,
     Randomizer,
 )
-from .randomization.clutter_randomizer import ClutterRandomizer
+from .randomization.clutter_randomizer import ClutterRandomizer, parse_clutter_spec
 from .randomization.object_randomizer import CompositeObjectRandomizer
 from .randomization.table_randomizer import (
     resolve_floor_randomizer,
@@ -75,7 +75,7 @@ class PickAnythingEnv(BaseEnv):
         object_randomizer: Optional[Randomizer] = None,
         table_randomizer: Optional[Union[Randomizer, str, Sequence[str]]] = None,
         floor_randomizer: Optional[Union[Randomizer, str]] = None,
-        clutter: Optional[Union[int, ClutterRandomizer]] = None,
+        clutter: Optional[Union[int, str, ClutterRandomizer]] = None,
         lighting_randomizer: Optional[Randomizer] = None,
         **kwargs,
     ):
@@ -110,20 +110,16 @@ class PickAnythingEnv(BaseEnv):
         self.floor_randomizer = resolve_floor_randomizer(
             floor_randomizer if floor_randomizer is not None else "texture"
         )
-        # clutter: int N (N distractors per env, reusing the object source pool) /
-        # a ClutterRandomizer / None (0 = no distractors, the default). Orthogonal
-        # to the other axes; distractors are physical but not in the state obs.
-        if clutter is None or (isinstance(clutter, int) and clutter <= 0):
-            self.clutter_randomizer = None
-        elif isinstance(clutter, int):
-            self.clutter_randomizer = ClutterRandomizer(
-                num_clutter=clutter, sources=sources
-            )
-        elif isinstance(clutter, ClutterRandomizer):
+        # clutter: int N / str ("3", "random_2_5", "0") / ClutterRandomizer /
+        # None. N distractors per env reusing the object source pool, placed on
+        # the table avoiding the target. "random_2_5" draws N in [2,5] per
+        # episode. Orthogonal to the other axes; physical but not in state obs.
+        if clutter is None or isinstance(clutter, ClutterRandomizer):
             self.clutter_randomizer = clutter
         else:
-            raise TypeError(
-                f"clutter must be an int, ClutterRandomizer, or None; got {clutter!r}"
+            spec = parse_clutter_spec(clutter)  # (lo, hi) or None
+            self.clutter_randomizer = (
+                ClutterRandomizer(num_clutter=spec, sources=sources) if spec else None
             )
         self.lighting_randomizer = lighting_randomizer or HDRILightingRandomizer()
         if reconfiguration_freq is None:

@@ -11,13 +11,16 @@ randomization. Four independent axes, each a pluggable `Randomizer`:
 | `--object-sources` | `cube` `ycb` `interndata` | all three | yes (space-sep) |
 | `--table-randomizer` | `wood` `texture` `procedural` | `wood` + `texture` (mix) | yes |
 | `--floor-randomizer` | `texture` `grid` | `texture` | no |
-| `--clutter` | int N (distractors/env) | `0` (off) | no |
+| `--clutter` | int N or `random_lo_hi` | `0` (off) | no |
 
 Multi-value axes pick one value per reconfigure. Lighting randomizes by default
 (HDRI + light direction/intensity; HDRI auto-disabled on macOS). All flags also
 accept `Randomizer` instances in code. `--clutter N` adds N distractor objects
 per env (reusing the `--object-sources` pool, placed on the table avoiding the
-target); distractors are physical but **not** in the state observation.
+target); `--clutter random_2_5` draws N in [2,5] **per episode** (builds the
+upper bound once, hides the unused ones far out of view each episode, so it
+varies under `reconfiguration_freq=0`). Distractors are physical but **not** in
+the state observation.
 
 ## `--object-sources` → data
 

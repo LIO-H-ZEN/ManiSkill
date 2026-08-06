@@ -1,5 +1,5 @@
 from .base import Randomizer
-from .clutter_randomizer import ClutterRandomizer
+from .clutter_randomizer import ClutterRandomizer, parse_clutter_spec
 from .lighting_randomizer import HDRILightingRandomizer
 from .object_randomizer import CompositeObjectRandomizer, ProceduralObjectRandomizer
 from .object_sources import (
@@ -44,6 +44,7 @@ __all__ = [
     "resolve_floor_randomizer",
     # clutter
     "ClutterRandomizer",
+    "parse_clutter_spec",
     # lighting
     "HDRILightingRandomizer",
 ]
