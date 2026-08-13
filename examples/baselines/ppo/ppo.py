@@ -89,6 +89,8 @@ class Args:
     """for benchmarking purposes we want to reconfigure the eval environment each reset to ensure objects are randomized in some tasks"""
     control_mode: Optional[str] = "pd_joint_delta_pos"
     """the control mode to use for the environment"""
+    robot_uids: Optional[str] = None
+    """robot uid to use (e.g. piper). None uses the env default."""
     object_sources: Optional[List[str]] = None
     """PickAnything only: object source aliases to mix each reconfigure
     (cube/ycb/interndata). None uses the env default. Pass e.g.
@@ -231,6 +233,8 @@ if __name__ == "__main__":
     env_kwargs = dict(obs_mode="state", render_mode="rgb_array", sim_backend="physx_cuda")
     if args.control_mode is not None:
         env_kwargs["control_mode"] = args.control_mode
+    if args.robot_uids is not None:
+        env_kwargs["robot_uids"] = args.robot_uids
     if args.object_sources is not None:
         env_kwargs["object_sources"] = args.object_sources
     if args.table_randomizer is not None:

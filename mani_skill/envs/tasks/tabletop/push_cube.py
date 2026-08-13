@@ -23,7 +23,7 @@ import torch
 import torch.random
 from transforms3d.euler import euler2quat
 
-from mani_skill.agents.robots import Fetch, Panda
+from mani_skill.agents.robots import Fetch, Panda, Piper
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.sensors.camera import CameraConfig
 from mani_skill.utils import common, sapien_utils
@@ -50,10 +50,10 @@ class PushCubeEnv(BaseEnv):
 
     _sample_video_link = "https://github.com/mani-skill/ManiSkill/raw/main/figures/environment_demos/PushCube-v1_rt.mp4"
 
-    SUPPORTED_ROBOTS = ["panda", "fetch"]
+    SUPPORTED_ROBOTS = ["panda", "fetch", "piper"]
 
     # Specify some supported robot types
-    agent: Union[Panda, Fetch]
+    agent: Union[Panda, Fetch, Piper]
 
     # set some commonly used values
     goal_radius = 0.1
@@ -100,7 +100,11 @@ class PushCubeEnv(BaseEnv):
 
     def _load_agent(self, options: dict):
         # set a reasonable initial pose for the agent that doesn't intersect other objects
-        super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
+        if self.robot_uids == "piper":
+            # Piper is a smaller desktop arm; place base closer so the cube is in reach
+            super()._load_agent(options, sapien.Pose(p=[-0.35, 0, 0]))
+        else:
+            super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
 
     def _load_scene(self, options: dict):
         # we use a prebuilt scene builder class that automatically loads in a floor and table.

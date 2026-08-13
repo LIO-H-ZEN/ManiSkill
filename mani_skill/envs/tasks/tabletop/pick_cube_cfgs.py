@@ -67,4 +67,15 @@ PICK_CUBE_CONFIGS = {
         "human_cam_eye_pos": [0.45, 0.5, 0.5],
         "human_cam_target_pos": [-0.2, 0.0, 0.2],
     },
+    "piper": {
+        "cube_half_size": 0.02,
+        "goal_thresh": 0.025,
+        "cube_spawn_half_size": 0.06,
+        "cube_spawn_center": (0.03, 0.0),
+        "max_goal_height": 0.12,
+        "sensor_cam_eye_pos": [-0.1, 0, 0.45],
+        "sensor_cam_target_pos": [0.03, 0, 0.08],
+        "human_cam_eye_pos": [0.3, 0.5, 0.40],
+        "human_cam_target_pos": [0.03, 0.0, 0.08],
+    },
 }
