@@ -291,3 +291,13 @@ class TableSceneBuilder(SceneBuilder):
             self.env.agent.robot.set_pose(
                 sapien.Pose([-0.725, 0, 0], q=euler2quat(0, 0, np.pi / 2))
             )
+        elif self.env.robot_uids == "piper":
+            # reset to the home keyframe (joint3 etc. must not start at a limit)
+            qpos = self.env.agent.keyframes["home"].qpos
+            qpos = (
+                self.env._episode_rng.normal(
+                    0, self.robot_init_qpos_noise, (b, len(qpos))
+                )
+                + qpos
+            )
+            self.env.agent.reset(qpos)

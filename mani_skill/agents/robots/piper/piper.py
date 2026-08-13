@@ -51,7 +51,7 @@ class Piper(BaseAgent):
     ee_link_name = "link6"
 
     arm_stiffness = 1e3
-    arm_damping = 1e2
+    arm_damping = 20  # piper 连杆轻,damping=100(照搬 panda)过阻尼致 PD 跟踪仅 39%;20 接近临界阻尼(~90% 跟踪),与 piper_ros MuJoCo 的 5~20 一致
     arm_force_limit = 100
 
     gripper_stiffness = 1e3
