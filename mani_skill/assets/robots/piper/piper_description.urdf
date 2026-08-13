@@ -291,4 +291,13 @@
     <axis xyz="0 0 -1" />
     <limit lower="-0.035" upper="0" effort="10" velocity="1" />
   </joint>
+
+  <!-- TCP frame at the gripper fingertip / contact point (analogous to panda_hand_tcp).
+       gripper_base frame == link6 frame, so this sits 0.1358m forward of link6. -->
+  <link name="piper_tcp" />
+  <joint name="piper_tcp_joint" type="fixed">
+    <origin xyz="0 0 0.1358" rpy="0 0 0" />
+    <parent link="gripper_base" />
+    <child link="piper_tcp" />
+  </joint>
 </robot>

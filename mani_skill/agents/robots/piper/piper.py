@@ -48,7 +48,7 @@ class Piper(BaseAgent):
         "joint7",
         "joint8",
     ]
-    ee_link_name = "link6"
+    ee_link_name = "piper_tcp"  # 夹爪接触点(指尖),非腕部 link6 -- 否则 push/grasp 奖励把腕部驱到目标,夹爪实际偏 0.1358m
 
     arm_stiffness = 1e3
     arm_damping = 20  # piper 连杆轻,damping=100(照搬 panda)过阻尼致 PD 跟踪仅 39%;20 接近临界阻尼(~90% 跟踪),与 piper_ros MuJoCo 的 5~20 一致
@@ -249,7 +249,7 @@ class Piper(BaseAgent):
 
     @staticmethod
     def build_grasp_pose(approaching, closing, center):
-        """Build a grasp pose (link6)."""
+        """Build a grasp pose (piper_tcp)."""
         assert np.abs(1 - np.linalg.norm(approaching)) < 1e-3
         assert np.abs(1 - np.linalg.norm(closing)) < 1e-3
         assert np.abs(approaching @ closing) <= 1e-3
