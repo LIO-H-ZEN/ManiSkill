@@ -50,8 +50,8 @@ class Piper(BaseAgent):
     ]
     ee_link_name = "piper_tcp"  # 夹爪接触点(指尖),非腕部 link6 -- 否则 push/grasp 奖励把腕部驱到目标,夹爪实际偏 0.1358m
 
-    arm_stiffness = 1e3
-    arm_damping = 20  # piper 连杆轻,damping=100(照搬 panda)过阻尼致 PD 跟踪仅 39%;20 接近临界阻尼(~90% 跟踪),与 piper_ros MuJoCo 的 5~20 一致
+    arm_stiffness = 1e2  # 对齐 Gazebo piper_gazebo_control.yaml joint p=100 (原 1e3 是 10 倍,致 a_max=87.7m/s2 探索时甩飞 cube)
+    arm_damping = 20   # 比 Gazebo d=5 高: SAPIEN 无 armature,需更高阻尼; a_max 降至 5.8m/s2,cube 惯性力 0.37N << 握力 1.2N
     arm_force_limit = 100
 
     gripper_stiffness = 1e2  # 对齐 Gazebo piper_gazebo_control.yaml joint7 p=100
