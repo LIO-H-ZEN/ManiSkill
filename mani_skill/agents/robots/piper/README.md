@@ -123,12 +123,12 @@ Piper 6-DOF 机械臂 + 双指夹爪（AgileX Robotics），接入 ManiSkill3 �
 
 ### PushCube
 
-<video preload="auto" controls="True" width="100%" style="max-width: min(100%, 512px);">
+<video controls muted width="480">
 <source src="https://github.com/LIO-H-ZEN/ManiSkill/raw/piper-integration-lzc/mani_skill/agents/robots/piper/piper_push_cube.mp4" type="video/mp4">
 </video>
 
 ### PickCube
 
-<video preload="auto" controls="True" width="100%" style="max-width: min(100%, 512px);">
+<video controls muted width="480">
 <source src="https://github.com/LIO-H-ZEN/ManiSkill/raw/piper-integration-lzc/mani_skill/agents/robots/piper/piper_pick_cube.mp4" type="video/mp4">
 </video>
