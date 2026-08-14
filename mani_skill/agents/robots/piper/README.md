@@ -49,6 +49,8 @@ Piper 6-DOF 机械臂 + 双指夹爪（AgileX Robotics），接入 ManiSkill3 �
 | k=100, b=20 | 5.8 | 0.121 | 过阻尼，夹不准 |
 | **k=100, b=5（Gazebo）** | **38** | **0.036** | **跟踪好，最终采用** |
 
+> **k=100, b=20 的判断依据**：训练视频里夹爪总是夹不准 cube（到位偏差大），据此推测过阻尼导致跟踪率差。后续实测确认：第 5 步跟踪误差 0.121 rad（远大于其他配置的 0.036），b=20 对轻连杆（腕关节）阻尼比 ζ 高达 14~30，严重过阻尼。降到 b=5 后跟踪恢复。
+
 **修复**：`arm_stiffness=100, arm_damping=5`（对齐 Gazebo）。
 
 **附带**：`ppo.py` 加 `--max-episode-steps`（PushCube 默认 50 步对慢速 piper 太短）。
@@ -114,3 +116,15 @@ Piper 6-DOF 机械臂 + 双指夹爪（AgileX Robotics），接入 ManiSkill3 �
 | PickCube cube 尺寸/质量 | 0.04 m / 0.064 kg |
 | 控制频率 | 20 Hz |
 | 仿真步长 | 0.01 s |
+
+---
+
+## 四、训练效果视频
+
+### PushCube
+
+<video src="./piper_push_cube.mp4" controls muted width="480"></video>
+
+### PickCube
+
+<video src="./piper_pick_cube.mp4" controls muted width="480"></video>
