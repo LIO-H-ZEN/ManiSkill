@@ -31,7 +31,7 @@ class Piper(BaseAgent):
 
     keyframes = dict(
         home=Keyframe(
-            qpos=np.array([0.0, 1.57, -1.3485, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            qpos=np.array([0.0, 1.57, -1.3485, 0.0, 0.0, 0.0, 0.035, -0.035]),  # 夹爪张开
             pose=sapien.Pose(),
         )
     )
@@ -160,12 +160,12 @@ class Piper(BaseAgent):
         # ---------------------------------------------------------------------- #
         gripper_pd_joint_pos = PDJointPosMimicControllerConfig(
             self.gripper_joint_names,
-            lower=-0.035,  # 对称映射: action=0→joint7=0(全开), action=1→0.035(全闭)
+            lower=0.0,   # 对齐 panda: action=-1→关节0(闭合), action=1→0.035(张开)
             upper=0.035,
             stiffness=self.gripper_stiffness,
             damping=self.gripper_damping,
             force_limit=self.gripper_force_limit,
-            mimic={"joint8": {"joint": "joint7", "ratio": -1.0}},
+            mimic={"joint8": {"joint": "joint7", "multiplier": -1.0}},
         )
 
         controller_configs = dict(

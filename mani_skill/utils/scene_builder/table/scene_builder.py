@@ -300,5 +300,5 @@ class TableSceneBuilder(SceneBuilder):
                 )
                 + qpos
             )
-            qpos[:, -2:] = 0.0  # 夹爪初始张开 (joint7=0, joint8=0, 与 panda 的 qpos[:,-2:]=0.04 一致)
+            qpos[:, -2:] = [0.035, -0.035]  # 夹爪初始张开 (joint7=0.035→开, 与 panda 的 qpos[:,-2:]=0.04 一致)
             self.env.agent.reset(qpos)
