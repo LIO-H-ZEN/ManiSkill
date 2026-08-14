@@ -160,8 +160,8 @@ class Piper(BaseAgent):
         # ---------------------------------------------------------------------- #
         gripper_pd_joint_pos = PDJointPosMimicControllerConfig(
             self.gripper_joint_names,
-            lower=-0.015,
-            upper=0.04,
+            lower=-0.035,  # 对称映射: action=0→joint7=0(全开), action=1→0.035(全闭)
+            upper=0.035,
             stiffness=self.gripper_stiffness,
             damping=self.gripper_damping,
             force_limit=self.gripper_force_limit,
