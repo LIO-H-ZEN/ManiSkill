@@ -54,8 +54,8 @@ class Piper(BaseAgent):
     arm_damping = 20  # piper 连杆轻,damping=100(照搬 panda)过阻尼致 PD 跟踪仅 39%;20 接近临界阻尼(~90% 跟踪),与 piper_ros MuJoCo 的 5~20 一致
     arm_force_limit = 100
 
-    gripper_stiffness = 1e3
-    gripper_damping = 1e2
+    gripper_stiffness = 1e2  # 对齐 Gazebo piper_gazebo_control.yaml joint7 p=100
+    gripper_damping = 10   # 对齐 Gazebo piper_gazebo_control.yaml joint7 d=10
     gripper_force_limit = 10  # 对齐 MuJoCo finger forcerange="-10 10"
 
     @property
