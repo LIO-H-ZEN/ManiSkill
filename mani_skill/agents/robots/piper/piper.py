@@ -223,8 +223,10 @@ class Piper(BaseAgent):
         rforce = torch.linalg.norm(r_contact_forces, axis=1)
 
         # direction to open the gripper
-        ldirection = self.finger1_link.pose.to_transformation_matrix()[..., :3, 1]
-        rdirection = -self.finger2_link.pose.to_transformation_matrix()[..., :3, 1]
+        # piper 手指的开合方向是 link 的 Z 轴(非 panda 的 Y 轴): joint7/joint8 沿
+        # gripper_base 的 ±Y 平移,经关节 rpy 旋转后映射到 link 局部 Z 轴
+        ldirection = self.finger1_link.pose.to_transformation_matrix()[..., :3, 2]
+        rdirection = self.finger2_link.pose.to_transformation_matrix()[..., :3, 2]
         langle = common.compute_angle_between(ldirection, l_contact_forces)
         rangle = common.compute_angle_between(rdirection, r_contact_forces)
         lflag = torch.logical_and(
