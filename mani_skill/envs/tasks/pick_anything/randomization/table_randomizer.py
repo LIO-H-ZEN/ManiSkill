@@ -79,6 +79,26 @@ class _RealTableRandomizer(Randomizer):
         """Override the glb's per-part materials. Implemented by subclasses."""
         raise NotImplementedError
 
+    def _resample_visual_state(self, env) -> None:
+        """Re-sample the per-reconfigure visual state (texture path / PBR params).
+
+        Override in subclasses that hold mutable visual state read by
+        :meth:`_apply_visual`. The base no-op covers the fixed-wood table, which
+        has nothing to re-sample. ``on_step`` calls this then ``_apply_visual``
+        to hot-swap the tabletop appearance mid-episode. Friction is a collision
+        property baked at build and is deliberately NOT re-sampled here.
+        """
+
+    def on_step(self, env, env_idx, options: dict) -> None:
+        # the table is a single kinematic actor shared across all parallel envs,
+        # so its material swap is global: re-sample once (whenever any env hits
+        # the cadence) and re-apply to the live RenderBodyComponent. No scene
+        # rebuild --- the geometry/collision are immutable, only the material
+        # maps on the existing render body are mutated in place.
+        self._resample_visual_state(env)
+        self._apply_visual(env.table)
+
+
     @staticmethod
     def _each_part_material(table):
         """Yield each ``RenderMaterial`` on each visual part of the glb table.
@@ -215,6 +235,14 @@ class ProceduralTableRandomizer(_RealTableRandomizer):
         self._pbr = (mtype, color, metallic, roughness)
         env.table_material_type = mtype  # exposed for logging / debugging
         self._build_table(env, physx_mat=None)
+
+    def _resample_visual_state(self, env) -> None:
+        # re-sample PBR params (no rebuild); on_step will re-apply via
+        # _apply_visual to the live table render body.
+        mtype, color, metallic, roughness = self._sample_material(env)
+        self._pbr = (mtype, color, metallic, roughness)
+        env.table_material_type = mtype
+
 
 
 # ---------------------------------------------------------------------------- #
@@ -487,6 +515,15 @@ class TextureTableRandomizer(_RealTableRandomizer):
         env.table_texture = os.path.basename(tex_path)
         env.table_friction = (sf, df, rest)
 
+    def _resample_visual_state(self, env) -> None:
+        # re-sample the surface texture only. Friction is a collision property
+        # baked at build and is deliberately NOT re-sampled mid-episode.
+        rng = env._batched_episode_rng[0]
+        tex_path = self.texture_source.get_texture(rng)
+        self._tex_path = tex_path
+        env.table_texture = os.path.basename(tex_path)
+
+
 
 class CompositeTableRandomizer(Randomizer):
     """Pick one table randomizer per reconfigure and delegate to it.
@@ -522,6 +559,11 @@ class CompositeTableRandomizer(Randomizer):
     def on_initialize_episode(self, env, env_idx, options: dict) -> None:
         if self._current is not None:
             self._current.on_initialize_episode(env, env_idx, options)
+
+    def on_step(self, env, env_idx, options: dict) -> None:
+        if self._current is not None:
+            self._current.on_step(env, env_idx, options)
+
 
 
 def _resolve_single_table(key: str, robot_init_qpos_noise: float) -> Randomizer:

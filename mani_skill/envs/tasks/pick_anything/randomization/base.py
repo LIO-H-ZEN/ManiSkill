@@ -21,6 +21,14 @@ cheaply:
   initializes --- e.g. measuring each object's resting height from its collision
   mesh so spawn poses put it flat on the table.
 
+* ``on_step`` runs every N control steps *during* an episode (not on reset),
+  driven by ``PickAnythingEnv._after_control_step``. It hot-swaps render-time /
+  pose assets mid-trajectory so the policy must stay robust to a changing
+  scene (sim2real). Same cheap-API contract as ``on_initialize_episode`` ---
+  HDRI swap, light-direction/intensity mutation, table material swap, clutter
+  re-placement --- and MUST NOT trigger a PhysX scene rebuild. ``env_idx`` is
+  the batch of envs whose ``_elapsed_steps`` hit the N-step cadence this step.
+
 Keeping the hooks separate is what later (v4) lets us turn the
 ``on_reconfigure`` part into a scene-provided "placement contract" and run pick
 in arbitrary scenes.
@@ -71,5 +79,19 @@ class Randomizer:
 
         Use for cheap render-time / pose changes: HDRI swap, light parameters,
         object pose, goal pose. ``env_idx`` is the batch of envs being reset.
+        """
+        pass
+
+    def on_step(
+        self, env: "PickAnythingEnv", env_idx: torch.Tensor, options: dict
+    ) -> None:
+        """Called every N control steps *during* an episode (not on reset).
+
+        Hot-swap render-time / pose assets mid-trajectory so the policy must
+        stay robust to a changing scene (sim2real): HDRI swap, light
+        direction/intensity, table material, clutter re-placement. Same
+        cheap-API contract as ``on_initialize_episode`` --- MUST NOT trigger a
+        PhysX scene rebuild. ``env_idx`` is the batch of envs whose
+        ``_elapsed_steps`` hit the N-step cadence this step.
         """
         pass

@@ -157,6 +157,15 @@ class ClutterRandomizer(Randomizer):
         env.clutter_zs = common.to_tensor(zs, device=env.device)
 
     def on_initialize_episode(self, env, env_idx: torch.Tensor, options: dict) -> None:
+        self._relocate_clutter(env, env_idx)
+
+    def on_step(self, env, env_idx: torch.Tensor, options: dict) -> None:
+        # mid-episode: re-draw which distractors are active and re-place them
+        # on the table (still avoiding the target). The pool is pre-built at
+        # reconfigure, so this is a pure pose write --- no scene rebuild.
+        self._relocate_clutter(env, env_idx)
+
+    def _relocate_clutter(self, env, env_idx: torch.Tensor) -> None:
         with torch.device(env.device):
             b = len(env_idx)
             H = self.hi
@@ -191,6 +200,7 @@ class ClutterRandomizer(Randomizer):
             xyz[..., 2] = z
             pq = torch.cat([xyz, qs], dim=-1).reshape(b * H, 7)
             env.clutter_objs.set_pose(Pose.create(pq))
+
 
     # ------------------------------------------------------------------ #
     # placement helpers

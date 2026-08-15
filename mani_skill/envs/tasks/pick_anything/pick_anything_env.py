@@ -71,6 +71,7 @@ class PickAnythingEnv(BaseEnv):
         robot_init_qpos_noise: float = 0.02,
         num_envs: int = 1,
         reconfiguration_freq=None,
+        domain_rand_freq: int = 25,
         object_sources: Optional[Sequence[Union[ObjectSource, str]]] = None,
         object_randomizer: Optional[Randomizer] = None,
         table_randomizer: Optional[Union[Randomizer, str, Sequence[str]]] = None,
@@ -122,6 +123,12 @@ class PickAnythingEnv(BaseEnv):
                 ClutterRandomizer(num_clutter=spec, sources=sources) if spec else None
             )
         self.lighting_randomizer = lighting_randomizer or HDRILightingRandomizer()
+        # mid-episode domain randomization cadence: every N control steps the
+        # lighting/table/clutter randomizers' on_step hooks fire (driven by
+        # _after_control_step below) to hot-swap render-time / pose assets during
+        # a trajectory, forcing sim2real robustness. 0 disables (behavior
+        # identical to before). Target object and robot are never changed.
+        self.domain_rand_freq = int(domain_rand_freq)
         if reconfiguration_freq is None:
             # single env: reconfigure (and thus re-randomize geometry) every
             # episode. many envs: opt-in via reconfiguration_freq>=1.
@@ -206,6 +213,37 @@ class PickAnythingEnv(BaseEnv):
             qpos[:, -2:] = 0.04
             self.agent.reset(qpos)
             self.agent.robot.set_pose(sapien.Pose([-0.615, 0, 0]))
+
+    # ------------------------------------------------------------------ #
+    # Mid-episode domain randomization (drives Randomizer.on_step)
+    # ------------------------------------------------------------------ #
+    def _after_control_step(self):
+        # Fires once per control step, after physics, before obs are fetched
+        # (sapien_env.py:1170 is a no-op by default). _after_control_step runs
+        # INSIDE _step_action, which is BEFORE sapien_env.py:1057 increments
+        # _elapsed_steps, so the counter is still at the pre-step value here.
+        # We therefore compare (steps+1) so the cadence lands on N, 2N, ...
+        # (the env has just completed its Nth step). The mask is False on a
+        # freshly-reset env: after reset _elapsed_steps is 0, so the first step
+        # sees (0+1)=1, never a multiple of N for N>1.
+        if self.domain_rand_freq == 0:
+            return
+        completed = self._elapsed_steps + 1
+        fire = (completed >= self.domain_rand_freq) & (
+            completed % self.domain_rand_freq == 0
+        )
+        if not bool(fire.any()):
+            return
+        env_idx = torch.arange(self.num_envs, device=self.device)[fire]
+        opts: dict = {}
+        # same order as _initialize_episode: lighting -> table -> clutter
+        self.lighting_randomizer.on_step(self, env_idx, opts)
+        self.table_randomizer.on_step(self, env_idx, opts)
+        if self.clutter_randomizer is not None:
+            self.clutter_randomizer.on_step(self, env_idx, opts)
+        if self.gpu_sim_enabled:
+            # push any pose / property writes to the GPU before obs are fetched
+            self.scene._gpu_apply_all()
 
     # ------------------------------------------------------------------ #
     # Task logic (same as PickCube / PickSingleYCB)

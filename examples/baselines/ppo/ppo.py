@@ -113,6 +113,12 @@ class Args:
     `random_2_5` = random N in [2,5] per episode; `0`/none (default) = off.
     Distractors reuse the object-sources pool, placed on the table avoiding the
     target. Orthogonal to all other axes."""
+    domain_rand_freq: Optional[int] = None
+    """PickAnything only: mid-episode domain randomization cadence. Every N
+    control steps during an episode, lighting (HDRI + direction/intensity),
+    table texture, and clutter are hot-swapped (target object and robot stay
+    fixed) to force sim2real robustness. None uses the env default (25). 0
+    disables (reset-only randomization, the previous behavior)."""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.8
@@ -249,6 +255,8 @@ if __name__ == "__main__":
         env_kwargs["floor_randomizer"] = args.floor_randomizer
     if args.clutter is not None:
         env_kwargs["clutter"] = args.clutter
+    if args.domain_rand_freq is not None:
+        env_kwargs["domain_rand_freq"] = args.domain_rand_freq
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
     if isinstance(envs.action_space, gym.spaces.Dict):
