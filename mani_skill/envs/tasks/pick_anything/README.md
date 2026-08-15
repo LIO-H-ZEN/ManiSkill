@@ -13,6 +13,7 @@ randomization. Four independent axes, each a pluggable `Randomizer`:
 | `--floor-randomizer` | `texture` `grid` | `texture` | no |
 | `--clutter` | int N or `random_lo_hi` | `0` (off) | no |
 | `--domain-rand-freq` | int N (steps) | `25` (`0`=off) | no |
+| `--domain-rand-axes` | `lighting` `table` `clutter` | all three | yes (space-sep) |
 
 Multi-value axes pick one value per reconfigure. Lighting randomizes by default
 (HDRI + light direction/intensity; HDRI auto-disabled on macOS). All flags also
@@ -23,7 +24,7 @@ upper bound once, hides the unused ones far out of view each episode, so it
 varies under `reconfiguration_freq=0`). Distractors are physical but **not** in
 the state observation.
 
-## Mid-episode randomization (`--domain-rand-freq`)
+## Mid-episode randomization (`--domain-rand-freq`, `--domain-rand-axes`)
 
 By default randomization only happens on **reset** (`on_reconfigure` bakes
 geometry/material; `on_initialize_episode` swaps HDRI / poses). Setting
@@ -31,22 +32,23 @@ geometry/material; `on_initialize_episode` swaps HDRI / poses). Setting
 `Randomizer.on_step`, that fires **every N control steps during an episode**
 (driven from `PickAnythingEnv._after_control_step`) to hot-swap render-time /
 pose assets mid-trajectory — forcing the policy to stay robust to a changing
-scene (sim2real):
+scene (sim2real).
 
-- **lighting** — HDRI env map + directional-light direction/intensity (the
-  light handle is captured at reconfigure so `.color`/`.pose` mutate in place;
-  on the single-scene GPU setup the directional light is global).
-- **table** — re-sampled surface texture / PBR color on the live render body
-  (no rebuild; geometry/friction are immutable). The table is a single shared
-  actor, so the swap is global.
-- **clutter** — active distractor subset + positions re-sampled (teleport on
-  the pre-built pool, still avoiding the target).
+`--domain-rand-axes` selects **which** axes are hot-swapped (default: all
+three; pass a space-separated subset, e.g. `--domain-rand-axes table clutter`):
+
+| Axis | What changes mid-episode | Notes |
+|------|--------------------------|-------|
+| `lighting` | HDRI env map + directional-light direction/intensity | The light handle is captured at reconfigure so `.color`/`.pose` mutate in place. On the single-scene GPU setup the directional light is global. HDRI auto-disabled on macOS/MoltenVK. |
+| `table` | re-sampled surface texture / PBR color on the live render body | No rebuild; geometry/friction are immutable. The table is a single shared actor, so the swap is global. |
+| `clutter` | active distractor subset + positions re-sampled | Teleport on the pre-built pool, still avoiding the target. No-op without `--clutter`. |
 
 The **target object and robot are never changed**. The hook is a per-env
 boolean mask `(elapsed_steps+1) % N == 0` (false on the reset step), so under
 partial reset each env swaps on its own cadence. No PhysX scene rebuild is
-triggered. HDRI and the table-texture GPU re-upload need a non-Mac GPU to
-verify (HDRI is auto-disabled on macOS/MoltenVK).
+triggered. Unknown axis names raise `ValueError`. HDRI and the table-texture
+GPU re-upload need a non-Mac GPU to verify (HDRI is auto-disabled on
+macOS/MoltenVK).
 
 ## `--object-sources` → data
 

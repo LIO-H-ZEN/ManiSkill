@@ -64,6 +64,10 @@ class PickAnythingEnv(BaseEnv):
     agent: Panda
     goal_thresh = 0.025
 
+    # axes that can be hot-swapped mid-episode via on_step. Each maps to the
+    # randomizer of the same role. See _resolve_domain_rand_axes / _after_control_step.
+    DOMAIN_RAND_AXES = ("lighting", "table", "clutter")
+
     def __init__(
         self,
         *args,
@@ -72,6 +76,7 @@ class PickAnythingEnv(BaseEnv):
         num_envs: int = 1,
         reconfiguration_freq=None,
         domain_rand_freq: int = 25,
+        domain_rand_axes: Optional[Sequence[str]] = None,
         object_sources: Optional[Sequence[Union[ObjectSource, str]]] = None,
         object_randomizer: Optional[Randomizer] = None,
         table_randomizer: Optional[Union[Randomizer, str, Sequence[str]]] = None,
@@ -129,6 +134,9 @@ class PickAnythingEnv(BaseEnv):
         # a trajectory, forcing sim2real robustness. 0 disables (behavior
         # identical to before). Target object and robot are never changed.
         self.domain_rand_freq = int(domain_rand_freq)
+        # which axes to hot-swap on_step. None -> all three. Each name maps to a
+        # randomizer; "clutter" is a no-op when no clutter randomizer is set.
+        self.domain_rand_axes = self._resolve_domain_rand_axes(domain_rand_axes)
         if reconfiguration_freq is None:
             # single env: reconfigure (and thus re-randomize geometry) every
             # episode. many envs: opt-in via reconfiguration_freq>=1.
@@ -217,6 +225,26 @@ class PickAnythingEnv(BaseEnv):
     # ------------------------------------------------------------------ #
     # Mid-episode domain randomization (drives Randomizer.on_step)
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _resolve_domain_rand_axes(axes) -> set:
+        """Validate the domain_rand_axes argument into a set of axis names.
+
+        None -> all axes (DOMAIN_RAND_AXES). Accepts a single name or a
+        sequence of names. Unknown names raise ValueError.
+        """
+        if axes is None:
+            return set(PickAnythingEnv.DOMAIN_RAND_AXES)
+        if isinstance(axes, str):
+            axes = [axes]
+        resolved = {a for a in axes}
+        unknown = resolved - set(PickAnythingEnv.DOMAIN_RAND_AXES)
+        if unknown:
+            raise ValueError(
+                f"unknown domain_rand_axes {sorted(unknown)}; valid: "
+                f"{list(PickAnythingEnv.DOMAIN_RAND_AXES)}"
+            )
+        return resolved
+
     def _after_control_step(self):
         # Fires once per control step, after physics, before obs are fetched
         # (sapien_env.py:1170 is a no-op by default). _after_control_step runs
@@ -226,7 +254,7 @@ class PickAnythingEnv(BaseEnv):
         # (the env has just completed its Nth step). The mask is False on a
         # freshly-reset env: after reset _elapsed_steps is 0, so the first step
         # sees (0+1)=1, never a multiple of N for N>1.
-        if self.domain_rand_freq == 0:
+        if self.domain_rand_freq == 0 or not self.domain_rand_axes:
             return
         completed = self._elapsed_steps + 1
         fire = (completed >= self.domain_rand_freq) & (
@@ -236,10 +264,13 @@ class PickAnythingEnv(BaseEnv):
             return
         env_idx = torch.arange(self.num_envs, device=self.device)[fire]
         opts: dict = {}
-        # same order as _initialize_episode: lighting -> table -> clutter
-        self.lighting_randomizer.on_step(self, env_idx, opts)
-        self.table_randomizer.on_step(self, env_idx, opts)
-        if self.clutter_randomizer is not None:
+        # same order as _initialize_episode: lighting -> table -> clutter.
+        # Only the axes selected via domain_rand_axes are hot-swapped.
+        if "lighting" in self.domain_rand_axes:
+            self.lighting_randomizer.on_step(self, env_idx, opts)
+        if "table" in self.domain_rand_axes:
+            self.table_randomizer.on_step(self, env_idx, opts)
+        if "clutter" in self.domain_rand_axes and self.clutter_randomizer is not None:
             self.clutter_randomizer.on_step(self, env_idx, opts)
         if self.gpu_sim_enabled:
             # push any pose / property writes to the GPU before obs are fetched

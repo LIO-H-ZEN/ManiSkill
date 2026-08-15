@@ -119,6 +119,14 @@ class Args:
     table texture, and clutter are hot-swapped (target object and robot stay
     fixed) to force sim2real robustness. None uses the env default (25). 0
     disables (reset-only randomization, the previous behavior)."""
+    domain_rand_axes: Optional[List[str]] = None
+    """PickAnything only: which axes `--domain-rand-freq` hot-swaps mid-episode.
+    Candidates: `lighting` (HDRI env map + directional-light direction/intensity;
+    HDRI auto-disabled on macOS), `table` (re-sampled surface texture / PBR color
+    on the live render body; global since the table is a single shared actor),
+    `clutter` (active distractor subset + positions re-sampled, teleport on the
+    pre-built pool; no-op without `--clutter`). None = all three. Pass a subset
+    e.g. `--domain-rand-axes table clutter`."""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.8
@@ -257,6 +265,8 @@ if __name__ == "__main__":
         env_kwargs["clutter"] = args.clutter
     if args.domain_rand_freq is not None:
         env_kwargs["domain_rand_freq"] = args.domain_rand_freq
+    if args.domain_rand_axes is not None:
+        env_kwargs["domain_rand_axes"] = args.domain_rand_axes
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
     if isinstance(envs.action_space, gym.spaces.Dict):
