@@ -34,6 +34,12 @@ geometry/material; `on_initialize_episode` swaps HDRI / poses). Setting
 pose assets mid-trajectory — forcing the policy to stay robust to a changing
 scene (sim2real).
 
+![Mid-episode domain randomization](./assets/mid_episode_dr.gif)
+
+*(random policy, `domain_rand_freq=5`, `table` + `clutter` swap every 5 steps;
+HDRI is disabled on macOS so only the table texture and distractor positions
+change in this clip.)*
+
 `--domain-rand-axes` selects **which** axes are hot-swapped (default: all
 three; pass a space-separated subset, e.g. `--domain-rand-axes table clutter`):
 
