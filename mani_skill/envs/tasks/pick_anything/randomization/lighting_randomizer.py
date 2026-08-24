@@ -89,6 +89,9 @@ class HDRILightingRandomizer(Randomizer):
         env.scene.set_ambient_light([0.3, 0.3, 0.3])
 
         direction, intensity = _sample_directional_light(rng)
+        env.directional_light_direction = np.asarray(direction, dtype=np.float64)
+        env.directional_light_intensity = float(intensity)
+        env.hdri_files = [None] * env.num_envs
         self._dir_lights = self._build_directional_light(env, direction, intensity)
 
     def _build_directional_light(self, env, direction, intensity):
@@ -134,9 +137,9 @@ class HDRILightingRandomizer(Randomizer):
             return
         rng = env._batched_episode_rng
         for i in env_idx.tolist():
-            env.scene.sub_scenes[i].set_environment_map(
-                self.hdri_files[int(rng[i].randint(0, len(self.hdri_files)))]
-            )
+            path = self.hdri_files[int(rng[i].randint(0, len(self.hdri_files)))]
+            env.scene.sub_scenes[i].set_environment_map(path)
+            env.hdri_files[i] = path
 
     def on_initialize_episode(self, env, env_idx, options: dict) -> None:
         self._swap_hdri(env, env_idx)
@@ -152,9 +155,10 @@ class HDRILightingRandomizer(Randomizer):
         rng = env._batched_episode_rng
         for light in self._dir_lights:
             direction, intensity = _sample_directional_light(rng)
+            env.directional_light_direction = np.asarray(direction, dtype=np.float64)
+            env.directional_light_intensity = float(intensity)
             light.color = [intensity, intensity, intensity]
             light.pose = sapien.Pose(
                 [0, 0, 0],
                 sapien.math.shortest_rotation([1, 0, 0], direction.tolist()),
             )
-

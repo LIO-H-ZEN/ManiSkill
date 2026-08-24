@@ -84,7 +84,8 @@ def _retry(fn, *, attempts: int, what: str):
 
 
 def main(args: Args):
-    from huggingface_hub import HfApi, RepoFile, RepoFolder, hf_hub_download
+    from huggingface_hub import HfApi, hf_hub_download
+    from huggingface_hub.hf_api import RepoFile, RepoFolder
 
     from mani_skill.envs.tasks.pick_anything.randomization.object_sources import (
         InternDataAssetsSource,

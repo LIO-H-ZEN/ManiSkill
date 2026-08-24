@@ -31,6 +31,7 @@ import sapien
 import sapien.render
 
 from mani_skill import ASSET_DIR
+from mani_skill.envs.tasks.pick_anything.episode_specs import ObjectSpec
 from mani_skill.utils.structs.actor import Actor
 
 
@@ -51,6 +52,60 @@ class ObjectSource:
         self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None
     ) -> Actor:  # pragma: no cover - interface
         raise NotImplementedError
+
+
+class FixedObjectSource(ObjectSource):
+    """Build exactly one versioned object without consuming sampling RNG."""
+
+    name = "fixed"
+
+    def __init__(self, spec: ObjectSpec):
+        self.spec = spec
+
+    def build_actor(
+        self,
+        env,
+        env_idx: int,
+        rng: np.random.RandomState,
+        name: Optional[str] = None,
+    ) -> Actor:
+        del rng
+        spec = self.spec
+        if spec.source == "cube":
+            builder = env.scene.create_actor_builder()
+            half_size = float(spec.cube_half_size)
+            builder.add_box_collision(half_size=[half_size] * 3)
+            builder.add_box_visual(
+                half_size=[half_size] * 3,
+                material=sapien.render.RenderMaterial(
+                    base_color=list(spec.cube_color)
+                ),
+            )
+        elif spec.source == "ycb":
+            from mani_skill.utils.building import actors
+
+            source = YCBSource(model_ids=[spec.object_id])
+            if spec.object_id not in source.model_ids:
+                raise ValueError(f"Unknown YCB object ID: {spec.object_id}")
+            builder = actors.get_actor_builder(env.scene, id=f"ycb:{spec.object_id}")
+        else:
+            source = InternDataAssetsSource(categories=[str(spec.category)])
+            instances = source._list_category_instances(str(spec.category))
+            if spec.object_id not in instances:
+                raise ValueError(
+                    f"Unknown InternData object: {spec.category}/{spec.object_id}"
+                )
+            obj_path = source._download_instance(str(spec.category), spec.object_id)
+            scale = source._resolve_scale(obj_path)
+            builder = env.scene.create_actor_builder()
+            builder.add_multiple_convex_collisions_from_file(
+                filename=obj_path, scale=[scale] * 3
+            )
+            builder.add_visual_from_file(filename=obj_path, scale=[scale] * 3)
+
+        builder.initial_pose = sapien.Pose()
+        builder.set_scene_idxs([env_idx])
+        return builder.build(name=name or f"{spec.source}-{spec.object_id}-{env_idx}")
 
 
 # ---------------------------------------------------------------------------- #
@@ -257,7 +312,7 @@ class InternDataAssetsSource(ObjectSource):
         # pre-downloaded assets). Either way, rebuild the manifest.
         ids: Optional[list[str]] = None
         try:
-            from huggingface_hub import RepoFolder
+            from huggingface_hub.hf_api import RepoFolder
 
             entries = self._list_tree(f"{self.REPO_PREFIX}/{category}")
             ids = [e.path.split("/")[-1] for e in entries if isinstance(e, RepoFolder)]
@@ -298,7 +353,7 @@ class InternDataAssetsSource(ObjectSource):
 
         cats: Optional[list[str]] = None
         try:
-            from huggingface_hub import RepoFolder
+            from huggingface_hub.hf_api import RepoFolder
 
             entries = self._list_tree(self.REPO_PREFIX)
             cats = [e.path.split("/")[-1] for e in entries if isinstance(e, RepoFolder)]
@@ -367,7 +422,8 @@ class InternDataAssetsSource(ObjectSource):
         if obj_path.exists() and marker.exists():
             return str(obj_path)
 
-        from huggingface_hub import RepoFile, hf_hub_download
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.hf_api import RepoFile
 
         prefix = f"{self.REPO_PREFIX}/{category}/{instance}"
         local_root.mkdir(parents=True, exist_ok=True)

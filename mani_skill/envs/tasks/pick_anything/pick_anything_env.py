@@ -18,6 +18,8 @@ Swap any axis by passing a custom ``object_randomizer`` / ``table_randomizer``
 / ``lighting_randomizer``, or grow the object candidate set via
 ``object_sources`` (e.g. ``["cube", "ycb", "interndata"]`` --- InternDataAssets
 meshes are downloaded on demand from a gated HF dataset).
+Distractors may use a separate ``clutter_sources`` pool, for example a
+procedural cube target with InternData clutter.
 
 **Randomizations:**
 - object identity (cube / YCB / mesh) + geometry/color --- per reconfiguration
@@ -82,16 +84,25 @@ class PickAnythingEnv(BaseEnv):
         table_randomizer: Optional[Union[Randomizer, str, Sequence[str]]] = None,
         floor_randomizer: Optional[Union[Randomizer, str]] = None,
         clutter: Optional[Union[int, str, ClutterRandomizer]] = None,
+        clutter_sources: Optional[Sequence[Union[ObjectSource, str]]] = None,
         lighting_randomizer: Optional[Randomizer] = None,
         **kwargs,
     ):
         self.robot_init_qpos_noise = robot_init_qpos_noise
-        # the object source pool (reused by the clutter randomizer below).
-        sources = list(object_sources) if object_sources else [
-            "cube",
-            "ycb",
-            "interndata",
-        ]
+        # Target-object source pool. Clutter reuses it unless an independent
+        # clutter_sources pool is supplied.
+        sources = (
+            list(object_sources)
+            if object_sources
+            else [
+                "cube",
+                "ycb",
+                "interndata",
+            ]
+        )
+        distractor_sources = (
+            list(clutter_sources) if clutter_sources is not None else sources
+        )
         # build randomizers before super().__init__ (they only hold config; they
         # touch the env later via their hooks).
         if object_randomizer is not None:
@@ -117,15 +128,18 @@ class PickAnythingEnv(BaseEnv):
             floor_randomizer if floor_randomizer is not None else "texture"
         )
         # clutter: int N / str ("3", "random_2_5", "0") / ClutterRandomizer /
-        # None. N distractors per env reusing the object source pool, placed on
-        # the table avoiding the target. "random_2_5" draws N in [2,5] per
-        # episode. Orthogonal to the other axes; physical but not in state obs.
+        # None. N distractors per env use clutter_sources when supplied, or
+        # reuse the target source pool otherwise. They are placed on the table
+        # avoiding the target. "random_2_5" draws N in [2,5] per episode.
+        # Orthogonal to the other axes; physical but not in state obs.
         if clutter is None or isinstance(clutter, ClutterRandomizer):
             self.clutter_randomizer = clutter
         else:
             spec = parse_clutter_spec(clutter)  # (lo, hi) or None
             self.clutter_randomizer = (
-                ClutterRandomizer(num_clutter=spec, sources=sources) if spec else None
+                ClutterRandomizer(num_clutter=spec, sources=distractor_sources)
+                if spec
+                else None
             )
         self.lighting_randomizer = lighting_randomizer or HDRILightingRandomizer()
         # mid-episode domain randomization cadence: every N control steps the
@@ -133,6 +147,12 @@ class PickAnythingEnv(BaseEnv):
         # _after_control_step below) to hot-swap render-time / pose assets during
         # a trajectory, forcing sim2real robustness. 0 disables (behavior
         # identical to before). Target object and robot are never changed.
+        if isinstance(domain_rand_freq, bool) or not isinstance(
+            domain_rand_freq, (int, np.integer)
+        ):
+            raise TypeError("domain_rand_freq must be a non-negative integer")
+        if domain_rand_freq < 0:
+            raise ValueError("domain_rand_freq must be non-negative")
         self.domain_rand_freq = int(domain_rand_freq)
         # which axes to hot-swap on_step. None -> all three. Each name maps to a
         # randomizer; "clutter" is a no-op when no clutter randomizer is set.
@@ -213,9 +233,7 @@ class PickAnythingEnv(BaseEnv):
             )
             b = len(env_idx)
             qpos = (
-                self._episode_rng.normal(
-                    0, self.robot_init_qpos_noise, (b, len(qpos))
-                )
+                self._episode_rng.normal(0, self.robot_init_qpos_noise, (b, len(qpos)))
                 + qpos
             )
             qpos[:, -2:] = 0.04

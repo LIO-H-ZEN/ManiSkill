@@ -13,6 +13,9 @@ from mani_skill.utils.building.ground import build_ground
 from mani_skill.utils.scene_builder import SceneBuilder
 
 
+PIPER_TABLE_ROBOTS = frozenset({"piper", "piper_wristcam"})
+
+
 class TableSceneBuilder(SceneBuilder):
     """A simple scene builder that adds a table to the scene such that the height of the table is at 0, and
     gives reasonable initial poses for robots."""
@@ -291,7 +294,7 @@ class TableSceneBuilder(SceneBuilder):
             self.env.agent.robot.set_pose(
                 sapien.Pose([-0.725, 0, 0], q=euler2quat(0, 0, np.pi / 2))
             )
-        elif self.env.robot_uids == "piper":
+        elif self.env.robot_uids in PIPER_TABLE_ROBOTS:
             # reset to the home keyframe (joint3 etc. must not start at a limit)
             qpos = self.env.agent.keyframes["home"].qpos
             qpos = (
@@ -300,5 +303,8 @@ class TableSceneBuilder(SceneBuilder):
                 )
                 + qpos
             )
-            qpos[:, -2:] = [0.035, -0.035]  # 夹爪初始张开 (joint7=0.035→开, 与 panda 的 qpos[:,-2:]=0.04 一致)
+            qpos[:, -2:] = [
+                0.035,
+                -0.035,
+            ]  # 夹爪初始张开 (joint7=0.035→开, 与 panda 的 qpos[:,-2:]=0.04 一致)
             self.env.agent.reset(qpos)

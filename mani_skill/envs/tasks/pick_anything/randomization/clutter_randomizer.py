@@ -6,13 +6,14 @@ floor / lighting) that adds **distractor objects** to the table, mimicking
 current behavior, and any object-sources / table / floor / lighting config
 composes with any clutter count.
 
-Distractors reuse the env's ``object_sources`` pool (the same candidate set as
-the target). They are built per env at reconfigure (exactly like the target
-object) and re-placed every episode at random table positions that avoid the
-target. Distractors are **physical** (they collide and affect dynamics) but are
-**not** added to the state observation --- mirroring ``PickClutterYCB``, where
-clutter is a visual/physical obstacle the policy must handle, not an explicit
-input. (State obs dimensions are unchanged, so existing policies still load.)
+Distractors use an independently configurable source pool, or reuse the target
+``object_sources`` pool when no separate pool is supplied. They are built per
+env at reconfigure and re-placed every episode at random table positions that
+avoid the target. Distractors are **physical** (they collide and affect
+dynamics) but are **not** added to the state observation --- mirroring
+``PickClutterYCB``, where clutter is a visual/physical obstacle the policy must
+handle, not an explicit input. (State obs dimensions are unchanged, so
+existing policies still load.)
 
 The count may be fixed (``num_clutter=3``) or random per episode
 (``num_clutter=(2, 5)`` -> each env draws N in [2, 5] every episode). Random
@@ -81,8 +82,8 @@ class ClutterRandomizer(Randomizer):
             per episode (each env draws N in [lo, hi] every episode). The upper
             bound ``hi`` is built at reconfigure; unused ones are hidden.
         sources: sequence of :class:`ObjectSource` instances or string aliases
-            (``"cube"``/``"ycb"``/``"interndata"``). Reused from the env's
-            object sources so distractors come from the same pool as the target.
+            (``"cube"``/``"ycb"``/``"interndata"``). The environment may pass
+            an independent clutter-only pool or the target-object pool.
         spawn_half_size / spawn_center: xy spawn region (match the object
             randomizer so distractors sit alongside the target).
         min_dist: minimum xy distance between an active distractor and the
@@ -177,7 +178,9 @@ class ClutterRandomizer(Randomizer):
                 N = torch.randint(self.lo, self.hi + 1, (b,), device=env.device)
 
             # resting z per distractor for the reset envs (env-major rows e*H..)
-            rows = env_idx.unsqueeze(1) * H + torch.arange(H, device=env.device).unsqueeze(0)
+            rows = env_idx.unsqueeze(1) * H + torch.arange(
+                H, device=env.device
+            ).unsqueeze(0)
             z_all = env.clutter_zs[rows.reshape(-1)].reshape(b, H)  # (b, H)
 
             # target xy for the reset envs -> active distractors avoid it
@@ -188,24 +191,44 @@ class ClutterRandomizer(Randomizer):
             hide_xy[:, 0] = _HIDE_X + torch.arange(H, device=env.device) * 0.3
             hide_xy[:, 1] = _HIDE_Y
 
-            active = torch.arange(H, device=env.device).unsqueeze(0) < N.unsqueeze(1)  # (b, H)
+            active = torch.arange(H, device=env.device).unsqueeze(0) < N.unsqueeze(
+                1
+            )  # (b, H)
             pos = torch.where(
                 active.unsqueeze(-1), pos_table, hide_xy.unsqueeze(0).expand(b, H, 2)
             )
             z = torch.where(active, z_all, torch.full_like(z_all, _HIDE_Z))
-            qs = randomization.random_quaternions(b * H, lock_x=True, lock_y=True).reshape(b, H, 4)
+            qs = randomization.random_quaternions(
+                b * H, lock_x=True, lock_y=True
+            ).reshape(b, H, 4)
 
             xyz = torch.zeros((b, H, 3))
             xyz[..., :2] = pos
             xyz[..., 2] = z
             pq = torch.cat([xyz, qs], dim=-1).reshape(b * H, 7)
-            env.clutter_objs.set_pose(Pose.create(pq))
-
+            if not env.gpu_sim_enabled:
+                for local_index, environment_index in enumerate(env_idx.tolist()):
+                    start = local_index * H
+                    actor_start = environment_index * H
+                    for clutter_index in range(H):
+                        env._clutter_objs[actor_start + clutter_index].set_pose(
+                            Pose.create(pq[start + clutter_index])
+                        )
+                return
+            previous_reset_mask = env.scene._reset_mask.clone()
+            env.scene._reset_mask[:] = False
+            env.scene._reset_mask[env_idx] = True
+            try:
+                env.clutter_objs.set_pose(Pose.create(pq))
+            finally:
+                env.scene._reset_mask = previous_reset_mask
 
     # ------------------------------------------------------------------ #
     # placement helpers
     # ------------------------------------------------------------------ #
-    def _sample_avoiding_target(self, b: int, H: int, target_xy: torch.Tensor) -> torch.Tensor:
+    def _sample_avoiding_target(
+        self, b: int, H: int, target_xy: torch.Tensor
+    ) -> torch.Tensor:
         lo, hi = -self.spawn_half_size, self.spawn_half_size
         cx, cy = self.spawn_center
 

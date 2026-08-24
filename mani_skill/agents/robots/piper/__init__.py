@@ -1,1 +1,2 @@
-from .piper import Piper
+from .piper import Piper as Piper
+from .piper_wristcam import PiperWristCam as PiperWristCam

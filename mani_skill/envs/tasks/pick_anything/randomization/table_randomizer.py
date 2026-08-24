@@ -344,7 +344,8 @@ class TableTextureSource:
         if cached is not None:
             return cached
         try:
-            from huggingface_hub import HfApi, RepoFile
+            from huggingface_hub import HfApi
+            from huggingface_hub.hf_api import RepoFile
 
             entries = list(
                 HfApi().list_repo_tree(

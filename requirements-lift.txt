@@ -1,0 +1,12 @@
+# Create a machine-local environment with:
+#   uv venv --python 3.11 /tmp/maniskill-lift-venv-$UID
+# Install the LiftCube/LiftAnything development dependencies with:
+#   UV_CACHE_DIR=/tmp/maniskill-lift-uv-cache uv pip install \
+#     --python /tmp/maniskill-lift-venv-$UID/bin/python \
+#     -r requirements-lift.txt
+
+-e .[dev]
+# MPLib 0.1.1 is not compatible with NumPy 2.x in the PIPER expert path.
+numpy==1.26.4
+# Keep the uv environment on the CUDA 12.6 wheel family used by the GPU workers.
+torch==2.7.1

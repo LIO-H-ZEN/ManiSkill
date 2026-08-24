@@ -11,6 +11,7 @@ import tyro
 from dataclasses import dataclass
 from typing import List, Optional, Annotated, Union
 
+
 @dataclass
 class Args:
     env_id: Annotated[str, tyro.conf.arg(aliases=["-e"])] = "PushCube-v1"
@@ -52,11 +53,13 @@ class Args:
     quiet: bool = False
     """Disable verbose output."""
 
-    seed: Annotated[Optional[Union[int, list[int]]], tyro.conf.arg(aliases=["-s"])] = None
+    seed: Annotated[Optional[Union[int, list[int]]], tyro.conf.arg(aliases=["-s"])] = (
+        None
+    )
     """Seed(s) for random actions and simulator. Can be a single integer or a list of integers. Default is None (no seeds)"""
 
     object_sources: Optional[List[str]] = None
-    """PickAnything only: object source aliases to mix each reconfigure, e.g.
+    """PickAnything-style environments: object source aliases to mix each reconfigure, e.g.
     `--object-sources cube ycb` or `--object-sources cube ycb interndata`.
     Valid: cube, ycb, interndata. Defaults to the env default (cube+ycb+
     interndata). interndata downloads meshes on demand from a gated HF dataset
@@ -64,28 +67,42 @@ class Args:
     acceptance."""
 
     table_randomizer: Optional[List[str]] = None
-    """PickAnything only: table surface randomizer alias, or a list of them to
+    """PickAnything-style environments: table surface alias, or a list to
     mix per reconfigure. `wood` = fixed PickCube wood table; `texture` = real
     InternDataAssets table-surface texture + random friction; `procedural` =
     random PBR color/metallic/roughness. None uses the env default
     (wood + texture mix). `texture` downloads textures on demand (gated HF)."""
 
     floor_randomizer: Optional[str] = None
-    """PickAnything only: floor (ground) randomizer alias. `texture` (default) =
+    """PickAnything-style environments: floor randomizer. `texture` (default) =
     InternDataAssets floor textures (floor_textures + background_textures);
     `grid` = checkered grid (no download). Independent of the table."""
 
     clutter: Optional[str] = None
-    """PickAnything only: distractor objects per env (clutter). `3` = fixed 3;
+    """PickAnything-style environments: distractors per env. `3` = fixed 3;
     `random_2_5` = random N in [2,5] per episode; `0`/none (default) = off.
-    Distractors reuse the object-sources pool, placed on the table avoiding the
-    target. Orthogonal to all other axes."""
+    Distractors reuse the object-sources pool unless --clutter-sources is set.
+    They are placed on the table avoiding the target."""
+
+    clutter_sources: Optional[List[str]] = None
+    """PickAnything-style environments: independent distractor source aliases,
+    e.g. `--object-sources cube --clutter-sources interndata`. Valid aliases are
+    cube, ycb, and interndata. None reuses the target object source pool."""
+
+    domain_rand_freq: Optional[int] = None
+    """PickAnything-style environments: mid-episode randomization cadence in
+    control steps. None uses the environment default (25); 0 disables it."""
+
+    domain_rand_axes: Optional[List[str]] = None
+    """PickAnything-style environments: axes changed mid-episode. Candidates
+    are lighting, table, and clutter. None uses all three axes."""
 
     num_episodes: int = 1
     """Number of episodes to run in non-human render mode (each reconfigures,
     re-randomizing PickAnything object/table/lighting). In human render mode the
     demo runs indefinitely, resetting to a fresh episode on the same table each
     time an episode ends (use a different -s seed to see a different table)."""
+
 
 def main(args: Args):
     if args.render_mode == "none":
@@ -97,8 +114,16 @@ def main(args: Args):
     if args.seed is not None:
         np.random.seed(args.seed[0])
     parallel_in_single_scene = args.render_mode == "human"
-    if args.render_mode == "human" and args.obs_mode in ["sensor_data", "rgb", "rgbd", "depth", "point_cloud"]:
-        print("Disabling parallel single scene/GUI render as observation mode is a visual one. Change observation mode to state or state_dict to see a parallel env render")
+    if args.render_mode == "human" and args.obs_mode in [
+        "sensor_data",
+        "rgb",
+        "rgbd",
+        "depth",
+        "point_cloud",
+    ]:
+        print(
+            "Disabling parallel single scene/GUI render as observation mode is a visual one. Change observation mode to state or state_dict to see a parallel env render"
+        )
         parallel_in_single_scene = False
     if args.render_mode == "human" and args.num_envs == 1:
         parallel_in_single_scene = False
@@ -128,14 +153,23 @@ def main(args: Args):
         env_kwargs["floor_randomizer"] = args.floor_randomizer
     if args.clutter is not None:
         env_kwargs["clutter"] = args.clutter
-    env: BaseEnv = gym.make(
-        args.env_id,
-        **env_kwargs
-    )
+    if args.clutter_sources is not None:
+        env_kwargs["clutter_sources"] = args.clutter_sources
+    if args.domain_rand_freq is not None:
+        env_kwargs["domain_rand_freq"] = args.domain_rand_freq
+    if args.domain_rand_axes is not None:
+        env_kwargs["domain_rand_axes"] = args.domain_rand_axes
+    env: BaseEnv = gym.make(args.env_id, **env_kwargs)
     record_dir = args.record_dir
     if record_dir:
         record_dir = record_dir.format(env_id=args.env_id)
-        env = RecordEpisode(env, record_dir, info_on_video=False, save_trajectory=False, max_steps_per_video=gym_utils.find_max_episode_steps_value(env))
+        env = RecordEpisode(
+            env,
+            record_dir,
+            info_on_video=False,
+            save_trajectory=False,
+            max_steps_per_video=gym_utils.find_max_episode_steps_value(env),
+        )
 
     if verbose:
         print("Observation space", env.observation_space)
@@ -146,7 +180,7 @@ def main(args: Args):
 
     obs, _ = env.reset(seed=args.seed, options=dict(reconfigure=True))
     if args.seed is not None and env.action_space is not None:
-            env.action_space.seed(args.seed[0])
+        env.action_space.seed(args.seed[0])
     if args.render_mode == "human":
         viewer = env.render()
         if isinstance(viewer, sapien.utils.Viewer):

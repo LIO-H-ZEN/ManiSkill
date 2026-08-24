@@ -12,17 +12,20 @@ randomization. Four independent axes, each a pluggable `Randomizer`:
 | `--table-randomizer` | `wood` `texture` `procedural` | `wood` + `texture` (mix) | yes |
 | `--floor-randomizer` | `texture` `grid` | `texture` | no |
 | `--clutter` | int N or `random_lo_hi` | `0` (off) | no |
+| `--clutter-sources` | `cube` `ycb` `interndata` | reuse target sources | yes (space-sep) |
 | `--domain-rand-freq` | int N (steps) | `25` (`0`=off) | no |
 | `--domain-rand-axes` | `lighting` `table` `clutter` | all three | yes (space-sep) |
 
 Multi-value axes pick one value per reconfigure. Lighting randomizes by default
 (HDRI + light direction/intensity; HDRI auto-disabled on macOS). All flags also
 accept `Randomizer` instances in code. `--clutter N` adds N distractor objects
-per env (reusing the `--object-sources` pool, placed on the table avoiding the
-target); `--clutter random_2_5` draws N in [2,5] **per episode** (builds the
-upper bound once, hides the unused ones far out of view each episode, so it
-varies under `reconfiguration_freq=0`). Distractors are physical but **not** in
-the state observation.
+per env, placed on the table avoiding the target. By default they reuse the
+`--object-sources` pool; `--clutter-sources interndata` selects an independent
+pool, so a cube target can be surrounded by recognizable InternData objects.
+`--clutter random_2_5` draws N in [2,5] **per episode** (builds the upper bound
+once, hides the unused ones far out of view each episode, so it varies under
+`reconfiguration_freq=0`). Distractors are physical but **not** in the state
+observation.
 
 ## Mid-episode randomization (`--domain-rand-freq`, `--domain-rand-axes`)
 

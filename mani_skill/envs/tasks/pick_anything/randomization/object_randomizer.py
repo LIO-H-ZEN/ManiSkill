@@ -57,6 +57,7 @@ class CompositeObjectRandomizer(Randomizer):
         spawn_half_size: float = 0.1,
         spawn_center=(0.0, 0.0),
         max_goal_height: float = 0.3,
+        create_goal: bool = True,
     ):
         if len(sources) == 0:
             raise ValueError("CompositeObjectRandomizer needs at least one source")
@@ -65,6 +66,7 @@ class CompositeObjectRandomizer(Randomizer):
         self.spawn_half_size = spawn_half_size
         self.spawn_center = spawn_center
         self.max_goal_height = max_goal_height
+        self.create_goal = create_goal
 
     def on_reconfigure(self, env, options: dict) -> None:
         b = env.num_envs
@@ -87,16 +89,17 @@ class CompositeObjectRandomizer(Randomizer):
         env.obj = Actor.merge(objs, name="object") if b > 1 else objs[0]
         env.add_to_state_dict_registry(env.obj)
 
-        env.goal_site = actors.build_sphere(
-            env.scene,
-            radius=self.goal_thresh,
-            color=[0, 1, 0, 1],
-            name="goal_site",
-            body_type="kinematic",
-            add_collision=False,
-            initial_pose=sapien.Pose(),
-        )
-        env._hidden_objects.append(env.goal_site)
+        if self.create_goal:
+            env.goal_site = actors.build_sphere(
+                env.scene,
+                radius=self.goal_thresh,
+                color=[0, 1, 0, 1],
+                name="goal_site",
+                body_type="kinematic",
+                add_collision=False,
+                initial_pose=sapien.Pose(),
+            )
+            env._hidden_objects.append(env.goal_site)
 
     def on_after_reconfigure(self, env, options: dict) -> None:
         # Resting height = distance from actor origin to the bottom of its
@@ -120,14 +123,18 @@ class CompositeObjectRandomizer(Randomizer):
             qs = randomization.random_quaternions(b, lock_x=True, lock_y=True)
             env.obj.set_pose(Pose.create_from_pq(xyz, qs))
 
-            goal_xyz = torch.zeros((b, 3))
-            goal_xyz[:, :2] = (
-                torch.rand((b, 2)) * self.spawn_half_size * 2 - self.spawn_half_size
-            )
-            goal_xyz[:, 0] += self.spawn_center[0]
-            goal_xyz[:, 1] += self.spawn_center[1]
-            goal_xyz[:, 2] = torch.rand((b,)) * self.max_goal_height + xyz[:, 2]
-            env.goal_site.set_pose(Pose.create_from_pq(goal_xyz))
+            if self.create_goal:
+                goal_xyz = torch.zeros((b, 3))
+                goal_xyz[:, :2] = (
+                    torch.rand((b, 2)) * self.spawn_half_size * 2
+                    - self.spawn_half_size
+                )
+                goal_xyz[:, 0] += self.spawn_center[0]
+                goal_xyz[:, 1] += self.spawn_center[1]
+                goal_xyz[:, 2] = (
+                    torch.rand((b,)) * self.max_goal_height + xyz[:, 2]
+                )
+                env.goal_site.set_pose(Pose.create_from_pq(goal_xyz))
 
 
 # ---------------------------------------------------------------------------- #
