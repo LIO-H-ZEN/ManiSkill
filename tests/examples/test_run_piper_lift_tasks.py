@@ -1,6 +1,7 @@
 import argparse
 import json
 import pathlib
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -150,6 +151,33 @@ def test_task_prompt_is_added_in_a_dedicated_bottom_bar() -> None:
 def test_empty_task_prompt_fast_fails() -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         launcher._with_task_prompt(np.zeros((224, 672, 3), dtype=np.uint8), "   ")
+
+
+@pytest.mark.parametrize(
+    ("actor_name", "expected_prompt"),
+    [
+        ("cube-0", "Pick up the cube."),
+        ("ycb-003_cracker_box-0", "Pick up the cracker box."),
+        (
+            "interndata-omniobject3d-chicken_leg_005-0",
+            "Pick up the chicken leg.",
+        ),
+        ("interndata-google_scan-toy_bus_001-0", "Pick up the toy bus."),
+    ],
+)
+def test_default_liftanything_prompt_names_sampled_object(
+    actor_name, expected_prompt
+) -> None:
+    env = SimpleNamespace(unwrapped=SimpleNamespace(object_names=[actor_name]))
+
+    assert launcher._default_task_prompt("liftanything", env) == expected_prompt
+
+
+def test_default_liftanything_prompt_fast_fails_for_unknown_actor_name() -> None:
+    env = SimpleNamespace(unwrapped=SimpleNamespace(object_names=["mystery-0"]))
+
+    with pytest.raises(RuntimeError, match="pass --task-prompt"):
+        launcher._default_task_prompt("liftanything", env)
 
 
 def test_episode_spec_file_is_selected_by_index(tmp_path) -> None:

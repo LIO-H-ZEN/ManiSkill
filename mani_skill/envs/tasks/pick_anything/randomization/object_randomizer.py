@@ -85,6 +85,10 @@ class CompositeObjectRandomizer(Randomizer):
             env.remove_from_state_dict_registry(obj)
             objs.append(obj)
 
+        # Preserve the concrete actor names for language instructions and
+        # episode metadata. Source actors encode the sampled object identity in
+        # their names (for example interndata-omniobject3d-chicken_leg_005-0).
+        env.object_names = [obj.name for obj in objs]
         env._objs = objs
         env.obj = Actor.merge(objs, name="object") if b > 1 else objs[0]
         env.add_to_state_dict_registry(env.obj)
@@ -126,14 +130,11 @@ class CompositeObjectRandomizer(Randomizer):
             if self.create_goal:
                 goal_xyz = torch.zeros((b, 3))
                 goal_xyz[:, :2] = (
-                    torch.rand((b, 2)) * self.spawn_half_size * 2
-                    - self.spawn_half_size
+                    torch.rand((b, 2)) * self.spawn_half_size * 2 - self.spawn_half_size
                 )
                 goal_xyz[:, 0] += self.spawn_center[0]
                 goal_xyz[:, 1] += self.spawn_center[1]
-                goal_xyz[:, 2] = (
-                    torch.rand((b,)) * self.max_goal_height + xyz[:, 2]
-                )
+                goal_xyz[:, 2] = torch.rand((b,)) * self.max_goal_height + xyz[:, 2]
                 env.goal_site.set_pose(Pose.create_from_pq(goal_xyz))
 
 

@@ -7,7 +7,8 @@ import argparse
 import datetime
 import json
 import pathlib
-from typing import Any, Sequence
+import re
+from typing import Any, Callable, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -25,7 +26,6 @@ ENV_IDS = {
 }
 DEFAULT_TASK_PROMPTS = {
     "liftcube": "Pick up the red cube.",
-    "liftanything": "Pick up the target object.",
 }
 DEFAULT_VIDEO_DIR = pathlib.Path(__file__).resolve().parents[2] / "piper_lift_videos"
 PROMPT_BAR_HEIGHT = 32
@@ -67,15 +67,63 @@ def _with_task_prompt(image: np.ndarray, task_prompt: str) -> np.ndarray:
     return np.concatenate([image, prompt_bar], axis=0)
 
 
+TaskPrompt = str | Callable[[], str]
+
+
+def _humanize_object_name(actor_name: str) -> str:
+    """Convert a source actor name into a concise visual object label."""
+    name = re.sub(r"-\d+$", "", actor_name)
+    if name == "cube":
+        return "cube"
+    if name.startswith("cube-"):
+        return "cube"
+    if name.startswith("ycb-"):
+        name = re.sub(r"^\d+_", "", name.removeprefix("ycb-"))
+    elif name.startswith("interndata-"):
+        name = name.removeprefix("interndata-")
+        name = re.sub(r"^(?:omniobject3d|google_scan|phocal)-", "", name)
+        name = re.sub(r"_\d+$", "", name)
+    else:
+        raise RuntimeError(
+            f"Cannot infer a task prompt from target actor name {actor_name!r}; "
+            "pass --task-prompt explicitly"
+        )
+    label = name.replace("_", " ").replace("-", " ").strip()
+    if not label:
+        raise RuntimeError(
+            f"Cannot infer a task prompt from target actor name {actor_name!r}; "
+            "pass --task-prompt explicitly"
+        )
+    return label
+
+
+def _default_task_prompt(task: str, base_env) -> str:
+    if task == "liftcube":
+        return DEFAULT_TASK_PROMPTS[task]
+    object_names = getattr(base_env.unwrapped, "object_names", None)
+    if not object_names:
+        raise RuntimeError(
+            "LiftAnything did not expose the sampled target object name; "
+            "pass --task-prompt explicitly"
+        )
+    return f"Pick up the {_humanize_object_name(str(object_names[0]))}."
+
+
+def _resolve_task_prompt(task_prompt: TaskPrompt) -> str:
+    return task_prompt() if callable(task_prompt) else task_prompt
+
+
 class PromptedRecordEpisode(RecordEpisode):
     """Record the human render camera with a task-prompt bar."""
 
-    def __init__(self, *args, task_prompt: str, **kwargs):
+    def __init__(self, *args, task_prompt: TaskPrompt, **kwargs):
         self.task_prompt = task_prompt
         super().__init__(*args, **kwargs)
 
     def capture_image(self, infos=None):
-        return _with_task_prompt(super().capture_image(infos), self.task_prompt)
+        return _with_task_prompt(
+            super().capture_image(infos), _resolve_task_prompt(self.task_prompt)
+        )
 
 
 class ThreeCameraRecordEpisode(PromptedRecordEpisode):
@@ -83,7 +131,8 @@ class ThreeCameraRecordEpisode(PromptedRecordEpisode):
 
     def capture_image(self, infos=None):
         return _with_task_prompt(
-            _camera_triptych(self.base_env.get_sensor_images()), self.task_prompt
+            _camera_triptych(self.base_env.get_sensor_images()),
+            _resolve_task_prompt(self.task_prompt),
         )
 
 
@@ -238,8 +287,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--task-prompt",
         help=(
-            "Text displayed on every video frame. If omitted, each task uses "
-            "its built-in prompt."
+            "Text displayed on every video frame. If omitted, the launcher "
+            "names the sampled target object automatically."
         ),
     )
     parser.add_argument(
@@ -397,10 +446,17 @@ def _run_expert(task: str, env, *, seed: int, vis: bool) -> dict[str, Any]:
 
 def run_task(task: str, args: argparse.Namespace) -> dict[str, Any]:
     env_id, kwargs = _environment_kwargs(task, args)
-    task_prompt = args.task_prompt or DEFAULT_TASK_PROMPTS[task]
     print(f"\nStarting {env_id} with seed={args.seed}", flush=True)
     print(json.dumps({"environment": env_id, "config": kwargs}, default=str, indent=2))
-    env = gym.make(env_id, **kwargs)
+    base_env = gym.make(env_id, **kwargs)
+    task_prompt: TaskPrompt
+    if args.task_prompt is not None:
+        task_prompt = args.task_prompt
+    elif task == "liftcube":
+        task_prompt = DEFAULT_TASK_PROMPTS[task]
+    else:
+        task_prompt = lambda: _default_task_prompt(task, base_env)
+    env = base_env
     video_output_dir: pathlib.Path | None = None
     if args.mode == "expert" and not args.no_video:
         video_output_dir = args.video_run_dir / env_id
@@ -427,7 +483,7 @@ def run_task(task: str, args: argparse.Namespace) -> dict[str, Any]:
             "seed": args.seed,
             "camera_shapes": camera_shapes,
             "mode": args.mode,
-            "task_prompt": task_prompt,
+            "task_prompt": _resolve_task_prompt(task_prompt),
         }
         if args.mode == "expert":
             summary["expert"] = _run_expert(

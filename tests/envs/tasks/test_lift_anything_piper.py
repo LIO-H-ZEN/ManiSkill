@@ -73,6 +73,29 @@ def test_composite_randomizer_can_disable_goal() -> None:
     assert not randomizer.create_goal
 
 
+def test_composite_randomizer_exposes_concrete_object_names() -> None:
+    randomizer = CompositeObjectRandomizer(["cube"], create_goal=False)
+
+    class FakeSource:
+        name = "interndata"
+
+        def build_actor(self, env, env_idx, rng):
+            return SimpleNamespace(name="interndata-omniobject3d-chicken_leg_005-0")
+
+    randomizer.sources = [FakeSource()]
+    env = SimpleNamespace(
+        num_envs=1,
+        _batched_episode_rng=BatchedRNG.from_seeds(np.array([0])),
+        remove_from_state_dict_registry=lambda actor: None,
+        add_to_state_dict_registry=lambda actor: None,
+    )
+
+    randomizer.on_reconfigure(env, {})
+
+    assert env.object_sources == ["interndata"]
+    assert env.object_names == ["interndata-omniobject3d-chicken_leg_005-0"]
+
+
 def test_spawn_validation_rejects_excess_motion_and_reach() -> None:
     validate_settled_spawn(
         initial_position=np.array([0.0, 0.0, 0.02]),

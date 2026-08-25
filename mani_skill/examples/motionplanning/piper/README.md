@@ -69,8 +69,10 @@ so the final frame is 672 x 256 at 20 FPS. The final JSON summary printed by
 the launcher contains the exact paths in `video_files` and the effective
 `task_prompt`.
 
-The built-in prompts are `Pick up the red cube.` for LiftCube and
-`Pick up the target object.` for LiftAnything. Override the displayed prompt:
+The built-in prompt is `Pick up the red cube.` for LiftCube. LiftAnything
+derives an object-specific prompt from the sampled target, for example
+`Pick up the chicken leg.` or `Pick up the cracker box.` Override the displayed
+prompt explicitly when desired:
 
 ```bash
 ./scripts/run_piper_lift_tasks.sh \
