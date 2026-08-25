@@ -37,6 +37,7 @@ BENCHMARK_CATEGORIES = (
     "ring_u_concave",
     "multipart_slender",
 )
+QUICK_CATEGORY = "unstratified"
 
 
 def current_frozen_versions() -> dict[str, str]:
@@ -129,37 +130,106 @@ def freeze_manifest(
     return payload
 
 
+def freeze_quick_manifest(
+    episodes: list[EpisodeSpec], *, episode_count: int, seed: int
+) -> dict:
+    if episode_count <= 0:
+        raise ValueError("episode_count must be positive")
+    if len(episodes) != episode_count:
+        raise ValueError(
+            f"Quick benchmark requires exactly {episode_count} episodes, "
+            f"got {len(episodes)}"
+        )
+    episode_ids = [episode.stable_episode_id for episode in episodes]
+    if len(episode_ids) != len(set(episode_ids)):
+        raise ValueError("Quick benchmark contains duplicate episode IDs")
+    object_ids = [episode.object_spec.stable_id for episode in episodes]
+    if len(object_ids) != len(set(object_ids)):
+        raise ValueError("Quick benchmark requires one layout per distinct object")
+    missing_settled = [
+        episode.stable_episode_id
+        for episode in episodes
+        if episode.settled_object_state is None
+    ]
+    if missing_settled:
+        raise ValueError(
+            f"Quick benchmark episodes lack post-settle state: {missing_settled}"
+        )
+    ordered = sorted(episodes, key=lambda episode: episode.stable_episode_id)
+    payload = {
+        "schema_version": "lift_anything_grasp_benchmark_v1",
+        "split": "quick",
+        "selection_mode": "unstratified_distinct_objects",
+        "promotion_eligible": False,
+        "seed": seed,
+        "episode_count": episode_count,
+        "poses_per_object": 1,
+        "categories": [QUICK_CATEGORY],
+        "object_categories": {
+            episode.object_spec.stable_id: QUICK_CATEGORY for episode in ordered
+        },
+        "frozen_versions": current_frozen_versions(),
+        "episodes": [episode.to_dict() for episode in ordered],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    payload["benchmark_manifest_sha256"] = hashlib.sha256(
+        canonical.encode()
+    ).hexdigest()
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--episode-manifest", type=pathlib.Path, required=True)
-    parser.add_argument("--category-map", type=pathlib.Path, required=True)
+    parser.add_argument("--category-map", type=pathlib.Path)
     parser.add_argument("--output", type=pathlib.Path, required=True)
-    parser.add_argument("--split", choices=("pilot", "formal"), required=True)
+    parser.add_argument("--split", choices=("quick", "pilot", "formal"), required=True)
     parser.add_argument("--objects-per-category", type=int)
-    parser.add_argument("--poses-per-object", type=int, default=5)
+    parser.add_argument("--poses-per-object", type=int)
+    parser.add_argument("--episode-count", type=int, default=100)
     parser.add_argument("--seed", type=int, default=20260825)
     parser.add_argument("--exclude-manifest", type=pathlib.Path)
     args = parser.parse_args()
-    objects_per_category = args.objects_per_category or (
-        6 if args.split == "pilot" else 25
-    )
     episodes = load_episode_specs_manifest(
         args.episode_manifest, require_settled_state=True
     )
-    categories = json.loads(args.category_map.read_text())
-    excluded = set()
-    if args.exclude_manifest is not None:
-        previous = json.loads(args.exclude_manifest.read_text())
-        excluded = set(previous["object_categories"])
-    payload = freeze_manifest(
-        episodes,
-        categories,
-        split=args.split,
-        objects_per_category=objects_per_category,
-        poses_per_object=args.poses_per_object,
-        seed=args.seed,
-        excluded_objects=excluded,
-    )
+    if args.split == "quick":
+        if any(
+            value is not None
+            for value in (
+                args.category_map,
+                args.objects_per_category,
+                args.poses_per_object,
+                args.exclude_manifest,
+            )
+        ):
+            raise ValueError(
+                "quick split does not accept category or stratified-selection options"
+            )
+        payload = freeze_quick_manifest(
+            episodes, episode_count=args.episode_count, seed=args.seed
+        )
+    else:
+        if args.category_map is None:
+            raise ValueError("pilot/formal splits require --category-map")
+        objects_per_category = args.objects_per_category or (
+            6 if args.split == "pilot" else 25
+        )
+        poses_per_object = args.poses_per_object or 5
+        categories = json.loads(args.category_map.read_text())
+        excluded = set()
+        if args.exclude_manifest is not None:
+            previous = json.loads(args.exclude_manifest.read_text())
+            excluded = set(previous["object_categories"])
+        payload = freeze_manifest(
+            episodes,
+            categories,
+            split=args.split,
+            objects_per_category=objects_per_category,
+            poses_per_object=poses_per_object,
+            seed=args.seed,
+            excluded_objects=excluded,
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 

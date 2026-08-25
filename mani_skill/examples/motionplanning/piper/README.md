@@ -254,6 +254,31 @@ uv run python scripts/freeze_lift_anything_benchmark.py \
   --poses-per-object 5
 ```
 
+For a fast, explicitly non-promotional comparison, deterministically sample
+100 distinct objects while materializing one layout per object, then freeze an
+unstratified quick manifest:
+
+```bash
+uv run python scripts/materialize_lift_anything_episode_specs.py \
+  --object-manifest /path/to/settling_accepted.json \
+  --output /path/to/quick100-episodes.json \
+  --seed-start 2026082500 \
+  --sample-count 100 \
+  --sample-seed 20260825 \
+  --num-procs 32 \
+  --render-backends cuda:0
+
+uv run python scripts/freeze_lift_anything_benchmark.py \
+  --episode-manifest /path/to/quick100-episodes.json \
+  --output /path/to/quick100-benchmark.json \
+  --split quick \
+  --episode-count 100
+```
+
+Run only groups `A,B` for this quick comparison. Quick reports include the
+paired difference and confidence interval but set the formal promotion
+decision to `null` because the sample is not category-stratified.
+
 Generate the reusable 256-candidate object-local cache and run the resumable
 paired benchmark. Each episode result is written separately before aggregation,
 so an interrupted worker can continue without losing completed shards:

@@ -15,6 +15,7 @@ from mani_skill.examples.motionplanning.piper.grasping.benchmark import (
 from scripts.freeze_lift_anything_benchmark import (
     BENCHMARK_CATEGORIES,
     freeze_manifest,
+    freeze_quick_manifest,
 )
 from scripts.collect_lift_anything_piper import AttemptResult, MetricsEpisodeRecorder
 from scripts import run_lift_anything_grasp_benchmark as benchmark_runner
@@ -80,6 +81,7 @@ def test_benchmark_analysis_uses_object_level_paired_bootstrap() -> None:
         "accepted": False,
         "attempted_candidates": 16,
         "reason": "lift",
+        "elapsed_seconds": 2.0,
         "candidate_evaluations": (
             {
                 "rank": 1,
@@ -94,6 +96,7 @@ def test_benchmark_analysis_uses_object_level_paired_bootstrap() -> None:
         "accepted": True,
         "attempted_candidates": 1,
         "reason": "accepted",
+        "elapsed_seconds": 1.0,
         "candidate_evaluations": (
             {
                 "rank": 1,
@@ -124,9 +127,37 @@ def test_benchmark_analysis_uses_object_level_paired_bootstrap() -> None:
     assert report["groups"]["A"]["geometry_feasible_recall_at_k"]["1"] == 1.0
     assert report["groups"]["B"]["ik_feasible_recall_at_k"]["1"] == 1.0
     assert report["groups"]["A"]["candidate_failure_stage_distribution"] == {"ik": 2}
+    assert report["groups"]["B"]["successful_candidate_rank"]["median"] == 1.0
+    assert report["groups"]["B"]["execution_seconds"]["p95"] == 1.0
     assert report["groups"]["B"]["grasp_oracle_status"] == "not_run"
     assert report["groups"]["B"]["grasp_oracle_recall_at_k"]["16"] is None
     assert report["paired_antipodal_minus_obb"]["promotion_passed"]
+
+
+def test_quick_benchmark_reports_delta_without_promotion_decision() -> None:
+    episode_to_object = {"object-0": "object"}
+    categories = {"object": "unstratified"}
+    row = {
+        "stable_episode_id": "object-0",
+        "accepted": True,
+        "attempted_candidates": 1,
+        "elapsed_seconds": 1.0,
+        "reason": "accepted",
+        "candidate_evaluations": (),
+    }
+
+    report = analyze_benchmark(
+        {"A": [row], "B": [row]},
+        episode_to_object,
+        categories,
+        bootstrap_samples=10,
+        evaluate_promotion=False,
+    )
+
+    comparison = report["paired_antipodal_minus_obb"]
+    assert comparison["mean"] == 0.0
+    assert comparison["promotion_evaluated"] is False
+    assert comparison["promotion_passed"] is None
 
 
 def test_formal_manifest_can_exclude_pilot_objects() -> None:
@@ -153,6 +184,17 @@ def test_formal_manifest_can_exclude_pilot_objects() -> None:
     )
 
     assert set(manifest["object_categories"]).isdisjoint(excluded)
+
+
+def test_quick_manifest_accepts_one_layout_for_100_unstratified_objects() -> None:
+    episodes = [_episode(f"object-{index:03d}", 0) for index in range(100)]
+
+    manifest = freeze_quick_manifest(episodes, episode_count=100, seed=20260825)
+
+    assert manifest["split"] == "quick"
+    assert manifest["promotion_eligible"] is False
+    assert len(manifest["episodes"]) == 100
+    assert set(manifest["object_categories"].values()) == {"unstratified"}
 
 
 class _MetricsEnv(gym.Env):

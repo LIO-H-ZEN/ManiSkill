@@ -41,6 +41,14 @@ def summarize_group(
     category_success: dict[str, list[float]] = collections.defaultdict(list)
     for object_id, success in object_success.items():
         category_success[object_categories[object_id]].append(success)
+    elapsed_seconds = np.asarray(
+        [float(row["elapsed_seconds"]) for row in rows], dtype=np.float64
+    )
+    if np.any(~np.isfinite(elapsed_seconds)) or np.any(elapsed_seconds < 0.0):
+        raise ValueError("benchmark elapsed_seconds must be finite and non-negative")
+    successful_ranks = [
+        int(row["attempted_candidates"]) for row in rows if bool(row["accepted"])
+    ]
     return {
         "episodes": len(rows),
         "objects": len(per_object),
@@ -51,6 +59,23 @@ def summarize_group(
         "category_macro_robust_success": float(
             np.mean([np.mean(values) for values in category_success.values()])
         ),
+        "attempted_candidates_mean": float(
+            np.mean([int(row["attempted_candidates"]) for row in rows])
+        ),
+        "successful_candidate_rank": {
+            "mean": (
+                None if not successful_ranks else float(np.mean(successful_ranks))
+            ),
+            "median": (
+                None if not successful_ranks else float(np.median(successful_ranks))
+            ),
+        },
+        "execution_seconds": {
+            "total": float(elapsed_seconds.sum()),
+            "mean": float(elapsed_seconds.mean()),
+            "p50": float(np.quantile(elapsed_seconds, 0.50)),
+            "p95": float(np.quantile(elapsed_seconds, 0.95)),
+        },
         "success_at_k": {
             str(k): float(np.mean([_success_at_k(row, k) for row in rows]))
             for k in K_VALUES
@@ -124,6 +149,7 @@ def analyze_benchmark(
     *,
     bootstrap_samples: int = 10_000,
     seed: int = 0,
+    evaluate_promotion: bool = True,
 ) -> dict[str, Any]:
     summaries = {
         group: summarize_group(rows, episode_to_object, object_categories)
@@ -159,11 +185,16 @@ def analyze_benchmark(
                 if simple_interval is None
                 else [simple_interval[1], simple_interval[2]]
             ),
-            "promotion_passed": bool(
-                mean >= 0.10
-                and lower > 0.0
-                and simple_interval is not None
-                and simple_interval[1] > -0.02
+            "promotion_evaluated": evaluate_promotion,
+            "promotion_passed": (
+                None
+                if not evaluate_promotion
+                else bool(
+                    mean >= 0.10
+                    and lower > 0.0
+                    and simple_interval is not None
+                    and simple_interval[1] > -0.02
+                )
             ),
         }
     return result

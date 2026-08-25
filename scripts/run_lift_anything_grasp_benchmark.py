@@ -11,6 +11,7 @@ import multiprocessing
 import os
 import pathlib
 import tempfile
+import time
 
 from mani_skill.envs.tasks.pick_anything.episode_specs import EpisodeSpec
 from mani_skill.examples.motionplanning.piper.grasping.benchmark import (
@@ -142,6 +143,7 @@ def _run_one(
     cache_dir: str,
 ) -> dict:
     benchmark_group = BenchmarkGroup(group)
+    started_at = time.monotonic()
     result = dataclasses.asdict(
         collect_attempt(
             spec_dict=episode_dict,
@@ -156,6 +158,7 @@ def _run_one(
     episode = EpisodeSpec.from_dict(episode_dict)
     result["benchmark_group"] = benchmark_group.value
     result["episode_spec_fingerprint"] = episode.fingerprint
+    result["elapsed_seconds"] = time.monotonic() - started_at
     result = json.loads(json.dumps(result))
     final_path = pathlib.Path(result_path)
     _validate_completed_result(result, episode, benchmark_group)
@@ -185,8 +188,11 @@ def main() -> None:
     if len(groups) != len(set(groups)):
         raise ValueError("groups must not contain duplicates")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    group_rows = {
-        group.value: _run_group(
+    group_rows = {}
+    group_wall_seconds = {}
+    for group in groups:
+        started_at = time.monotonic()
+        group_rows[group.value] = _run_group(
             group,
             episodes,
             output_dir=args.output_dir,
@@ -194,14 +200,14 @@ def main() -> None:
             render_backends=render_backends,
             num_procs=args.num_procs,
         )
-        for group in groups
-    }
+        group_wall_seconds[group.value] = time.monotonic() - started_at
     episode_to_object = {
         episode.stable_episode_id: episode.object_spec.stable_id for episode in episodes
     }
     report = {
         "benchmark_manifest_sha256": manifest["benchmark_manifest_sha256"],
         "benchmark_split": manifest["split"],
+        "group_wall_seconds": group_wall_seconds,
         "results": group_rows,
         "summary": analyze_benchmark(
             group_rows,
@@ -209,6 +215,7 @@ def main() -> None:
             manifest["object_categories"],
             bootstrap_samples=args.bootstrap_samples,
             seed=int(manifest["seed"]),
+            evaluate_promotion=bool(manifest.get("promotion_eligible", True)),
         ),
     }
     _write_json_atomic(args.output_dir / "benchmark_results.json", report)

@@ -4,14 +4,34 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import multiprocessing
 import pathlib
 
 import gymnasium as gym
+import numpy as np
 
 import mani_skill.envs  # noqa: F401
 from mani_skill.envs.tasks.pick_anything.episode_specs import ObjectSpec
+
+
+def select_object_specs(
+    specs: list[ObjectSpec], *, sample_count: int | None, seed: int
+) -> list[ObjectSpec]:
+    by_stable_id = {spec.stable_id: spec for spec in specs}
+    if len(by_stable_id) != len(specs):
+        raise ValueError("Object manifest contains duplicate stable IDs")
+    ordered = [by_stable_id[key] for key in sorted(by_stable_id)]
+    if sample_count is None:
+        return ordered
+    if not 1 <= sample_count <= len(ordered):
+        raise ValueError(
+            f"sample-count must be in [1, {len(ordered)}], got {sample_count}"
+        )
+    rng = np.random.default_rng(seed)
+    indices = rng.permutation(len(ordered))[:sample_count]
+    return [ordered[int(index)] for index in indices]
 
 
 def materialization_coordinates(
@@ -48,6 +68,8 @@ def _materialize(
         sim_backend="physx_cpu",
         num_envs=1,
         render_backend=render_backend,
+        clutter=0,
+        domain_rand_freq=0,
     )
     attempts = []
     try:
@@ -75,7 +97,9 @@ def _materialize(
             )
             return {
                 "stable_episode_id": stable_episode_id,
-                "episode": env.unwrapped.capture_episode_spec(stable_episode_id).to_dict(),
+                "episode": env.unwrapped.capture_episode_spec(
+                    stable_episode_id
+                ).to_dict(),
                 "attempts": attempts,
             }
     finally:
@@ -97,11 +121,19 @@ def main() -> None:
     parser.add_argument("--render-backends", default="cuda:0")
     parser.add_argument("--max-attempts-per-object", type=int, default=8)
     parser.add_argument("--allow-failures", action="store_true")
+    parser.add_argument("--sample-count", type=int)
+    parser.add_argument("--sample-seed", type=int, default=20260825)
     args = parser.parse_args()
     payload = json.loads(args.object_manifest.read_text())
     rows = payload["objects"] if isinstance(payload, dict) else payload
-    specs = [ObjectSpec.from_dict(row) for row in rows]
-    render_backends = tuple(item.strip() for item in args.render_backends.split(",") if item.strip())
+    specs = select_object_specs(
+        [ObjectSpec.from_dict(row) for row in rows],
+        sample_count=args.sample_count,
+        seed=args.sample_seed,
+    )
+    render_backends = tuple(
+        item.strip() for item in args.render_backends.split(",") if item.strip()
+    )
     if (
         args.num_procs <= 0
         or not render_backends
@@ -114,7 +146,10 @@ def main() -> None:
         )
     context = multiprocessing.get_context("spawn")
     results = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=args.num_procs, mp_context=context) as executor:
+    specs_by_episode_id = {}
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=args.num_procs, mp_context=context
+    ) as executor:
         futures = []
         for index, spec in enumerate(specs):
             stable_episode_id, environment_seed_start = materialization_coordinates(
@@ -124,6 +159,7 @@ def main() -> None:
                 seed_start=args.seed_start,
                 max_attempts=args.max_attempts_per_object,
             )
+            specs_by_episode_id[stable_episode_id] = spec
             futures.append(
                 executor.submit(
                     _materialize,
@@ -139,16 +175,31 @@ def main() -> None:
     results.sort(key=lambda row: row["stable_episode_id"])
     episodes = [row["episode"] for row in results if row["episode"] is not None]
     failures = [row for row in results if row["episode"] is None]
+    accepted_specs = [
+        specs_by_episode_id[row["stable_episode_id"]]
+        for row in results
+        if row["episode"] is not None
+    ]
     episodes.sort(key=lambda row: row["stable_episode_id"])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(
             {
                 "episodes": episodes,
+                "objects": [spec.to_dict() for spec in accepted_specs],
                 "materialization": results,
                 "attempted_objects": len(results),
                 "accepted_objects": len(episodes),
                 "failed_objects": len(failures),
+                "source_object_manifest": str(args.object_manifest),
+                "source_object_manifest_sha256": hashlib.sha256(
+                    args.object_manifest.read_bytes()
+                ).hexdigest(),
+                "selection": {
+                    "sample_count": args.sample_count,
+                    "sample_seed": args.sample_seed,
+                    "selected_stable_ids": [spec.stable_id for spec in specs],
+                },
             },
             indent=2,
             sort_keys=True,

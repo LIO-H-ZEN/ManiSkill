@@ -32,6 +32,7 @@ from scripts.build_lift_anything_supplement import build_supplemental_specs
 from scripts.materialize_lift_anything_episode_specs import (
     _materialize,
     materialization_coordinates,
+    select_object_specs,
 )
 
 
@@ -561,6 +562,23 @@ def test_materialization_coordinates_preserve_global_shard_identity() -> None:
 
     assert stable_episode_id == "cube-000067"
     assert seed == 201_072
+
+
+def test_quick_materialization_sample_is_deterministic_and_unique() -> None:
+    specs = [
+        ObjectSpec(
+            source="interndata",
+            object_id=f"object-{index:03d}",
+            category="test",
+        )
+        for index in range(20)
+    ]
+
+    first = select_object_specs(specs, sample_count=10, seed=17)
+    second = select_object_specs(list(reversed(specs)), sample_count=10, seed=17)
+
+    assert [spec.stable_id for spec in first] == [spec.stable_id for spec in second]
+    assert len({spec.stable_id for spec in first}) == 10
 
 
 def test_supplement_prefers_unique_failed_interndata_objects() -> None:

@@ -8,6 +8,7 @@ import dataclasses
 import json
 import multiprocessing
 import pathlib
+import time
 
 from mani_skill.envs.tasks.pick_anything.episode_specs import ObjectSpec
 from mani_skill.examples.motionplanning.piper.grasping.antipodal import (
@@ -30,6 +31,7 @@ from mani_skill.examples.motionplanning.piper.grasping.geometry import (
 
 
 def generate_one(*, object_spec_dict: dict, cache_root: str, config_dict: dict) -> dict:
+    started_at = time.monotonic()
     spec = ObjectSpec.from_dict(object_spec_dict)
     geometry = resolve_object_geometry(spec)
     config = AntipodalConfig(**config_dict)
@@ -60,13 +62,20 @@ def generate_one(*, object_spec_dict: dict, cache_root: str, config_dict: dict) 
         if not str(error).startswith("proposal-empty:"):
             raise
         cache.store(key, [], manifest=manifest, failure=str(error))
-        return {"object": spec.stable_id, "key": key, "count": 0, "failure": str(error)}
+        return {
+            "object": spec.stable_id,
+            "key": key,
+            "count": 0,
+            "failure": str(error),
+            "elapsed_seconds": time.monotonic() - started_at,
+        }
     cache.store(key, candidates, manifest=manifest)
     return {
         "object": spec.stable_id,
         "key": key,
         "count": len(candidates),
         "failure": None,
+        "elapsed_seconds": time.monotonic() - started_at,
     }
 
 
@@ -82,9 +91,12 @@ def main() -> None:
     payload = json.loads(args.object_manifest.read_text())
     rows = payload["objects"] if isinstance(payload, dict) else payload
     specs = [ObjectSpec.from_dict(row) for row in rows]
+    if not specs:
+        raise ValueError("object manifest must contain at least one object")
     config = AntipodalConfig()
     context = multiprocessing.get_context("spawn")
     results = []
+    wall_started_at = time.monotonic()
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=args.num_procs, mp_context=context
     ) as executor:
@@ -102,6 +114,8 @@ def main() -> None:
             results.append(result)
             print(json.dumps(result, sort_keys=True), flush=True)
     results.sort(key=lambda row: row["object"])
+    wall_seconds = time.monotonic() - wall_started_at
+    elapsed_seconds = [float(row["elapsed_seconds"]) for row in results]
     args.output_manifest.parent.mkdir(parents=True, exist_ok=True)
     args.output_manifest.write_text(
         json.dumps(
@@ -109,6 +123,13 @@ def main() -> None:
                 "provider": GraspProviderName.ANTIPODAL.value,
                 "provider_version": ANTIPODAL_PROVIDER_VERSION,
                 "provider_config": dataclasses.asdict(config),
+                "objects": len(results),
+                "failures": sum(row["failure"] is not None for row in results),
+                "generation_seconds": {
+                    "sum": sum(elapsed_seconds),
+                    "mean": sum(elapsed_seconds) / len(elapsed_seconds),
+                    "wall": wall_seconds,
+                },
                 "results": results,
             },
             indent=2,
