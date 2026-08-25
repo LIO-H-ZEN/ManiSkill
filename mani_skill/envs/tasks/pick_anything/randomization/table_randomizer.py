@@ -23,6 +23,7 @@ with multiple parts, each carrying its own material).
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
@@ -399,20 +400,37 @@ class TableTextureSource:
         """
         if not self.max_texture_dim or self.max_texture_dim <= 0:
             return str(path)
+        from PIL import Image
+
         safe = path.parent / "_safe" / (path.stem + ".png")
         if safe.exists():
-            return str(safe)
-        try:
-            from PIL import Image
+            try:
+                with Image.open(safe) as im:
+                    im.verify()
+                return str(safe)
+            except Exception:
+                # A pre-atomic implementation could leave a partial cache file.
+                # Regenerate it below instead of exposing it to the renderer.
+                pass
 
+        safe.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{safe.name}.", suffix=".tmp", dir=safe.parent
+        )
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
             with Image.open(path) as im:
                 im = im.convert("RGB")
                 im.thumbnail((self.max_texture_dim, self.max_texture_dim))
-                safe.parent.mkdir(parents=True, exist_ok=True)
-                im.save(safe, "PNG")
-        except Exception:
-            # if anything goes wrong, fall back to the original file
-            return str(path)
+                im.save(tmp, "PNG")
+            with Image.open(tmp) as im:
+                im.verify()
+            with tmp.open("rb") as f:
+                os.fsync(f.fileno())
+            os.replace(tmp, safe)
+        finally:
+            tmp.unlink(missing_ok=True)
         return str(safe)
 
     def get_texture(self, rng) -> str:
