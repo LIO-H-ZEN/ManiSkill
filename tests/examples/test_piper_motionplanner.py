@@ -166,6 +166,18 @@ def test_piper_collision_proxy_supports_self_collision_queries() -> None:
 
     source = Path("mani_skill/assets/robots/piper/piper_description.urdf")
     generated = PiperMotionPlanningSolver._build_collision_planning_urdf(str(source))
+    generated_root = ET.parse(generated).getroot()
+    collision_counts = {
+        link.attrib["name"]: len(link.findall("collision"))
+        for link in generated_root.findall("link")
+    }
+    assert collision_counts["gripper_base"] > 1
+    assert collision_counts["link7"] > 1
+    assert collision_counts["link8"] > 1
+    assert not any(
+        ".repaired." in mesh.attrib["filename"]
+        for mesh in generated_root.findall(".//collision/geometry/mesh")
+    )
     links = [
         "base_link",
         "link1",

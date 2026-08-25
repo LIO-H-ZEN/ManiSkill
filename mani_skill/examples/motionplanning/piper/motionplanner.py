@@ -1,7 +1,8 @@
+import copy
+import fcntl
 import hashlib
 import os
 import pathlib
-import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 
@@ -22,7 +23,18 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
     OPEN = 1.0
     CLOSED = -1.0
     MOVE_GROUP = "piper_tcp"
-    COLLISION_PROXY_VERSION = "piper_collision_proxy_v3"
+    COLLISION_PROXY_VERSION = "piper_collision_proxy_v4_coacd"
+    COACD_PARAMETERS = {
+        "threshold": 0.08,
+        "max_convex_hull": 8,
+        "preprocess_mode": "on",
+        "preprocess_resolution": 20,
+        "resolution": 1000,
+        "mcts_nodes": 10,
+        "mcts_iterations": 50,
+        "mcts_max_depth": 3,
+        "seed": 0,
+    }
 
     def __init__(
         self,
@@ -93,58 +105,84 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
         cache_dir = output_dir / digest
         cache_dir.mkdir(parents=True, exist_ok=True)
         output_path = cache_dir / "piper_collision.urdf"
-        if output_path.exists():
-            return output_path
+        lock_path = cache_dir / ".build.lock"
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if output_path.exists():
+                return output_path
 
-        for link in root.findall("link"):
-            for tag in ("visual", "inertial"):
-                for node in list(link.findall(tag)):
-                    link.remove(node)
-            for collision in list(link.findall("collision")):
-                mesh_node = collision.find("geometry/mesh")
-                if mesh_node is None:
-                    continue
-                path = pathlib.Path(mesh_node.attrib["filename"])
-                if not path.is_absolute():
-                    path = source.parent / path
-                path = path.resolve()
-                mesh = trimesh.load(path, force="mesh", process=True)
-                if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
-                    raise ValueError(f"Invalid PIPER collision mesh: {path}")
-                if mesh.is_watertight and mesh.is_volume:
-                    cached_source = cache_dir / path.name
-                    temporary_source = cached_source.with_suffix(f".{os.getpid()}.tmp")
-                    shutil.copyfile(path, temporary_source)
-                    os.replace(temporary_source, cached_source)
-                    shutil.copyfile(
-                        cached_source,
-                        cached_source.with_name(cached_source.name + ".convex.stl"),
+            try:
+                import coacd
+            except ModuleNotFoundError as error:
+                raise ModuleNotFoundError(
+                    "PiPER collision-aware planning requires coacd; install "
+                    "requirements-lift.txt"
+                ) from error
+            coacd.set_log_level("off")
+
+            for link in root.findall("link"):
+                for tag in ("visual", "inertial"):
+                    for node in list(link.findall(tag)):
+                        link.remove(node)
+                collisions = list(link.findall("collision"))
+                for collision_index, collision in enumerate(collisions):
+                    mesh_node = collision.find("geometry/mesh")
+                    if mesh_node is None:
+                        continue
+                    path = pathlib.Path(mesh_node.attrib["filename"])
+                    if not path.is_absolute():
+                        path = source.parent / path
+                    path = path.resolve()
+                    mesh = trimesh.load(path, force="mesh", process=True)
+                    if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
+                        raise ValueError(f"Invalid PIPER collision mesh: {path}")
+                    parts = coacd.run_coacd(
+                        coacd.Mesh(
+                            np.asarray(mesh.vertices, dtype=np.float64),
+                            np.asarray(mesh.faces, dtype=np.int32),
+                        ),
+                        **cls.COACD_PARAMETERS,
                     )
-                    mesh_node.set("filename", cached_source.name)
-                    continue
-                repaired = mesh.convex_hull
-                if not repaired.is_watertight or not repaired.is_volume:
-                    raise ValueError(f"Failed to repair PIPER collision mesh: {path}")
-                proxy_path = cache_dir / f"{path.stem}.repaired.stl"
-                temporary_proxy = proxy_path.with_suffix(f".{os.getpid()}.tmp")
-                repaired.export(temporary_proxy, file_type="stl")
-                os.replace(temporary_proxy, proxy_path)
-                shutil.copyfile(
-                    proxy_path,
-                    proxy_path.with_name(proxy_path.name + ".convex.stl"),
-                )
-                mesh_node.set("filename", proxy_path.name)
-        for mesh_node in root.findall(".//collision/geometry/mesh"):
-            cached_mesh = cache_dir / mesh_node.attrib["filename"]
-            if not cached_mesh.is_file():
-                raise RuntimeError(f"Planning collision mesh is missing: {cached_mesh}")
-            mplib_mesh = cached_mesh.with_name(cached_mesh.name + ".convex.stl")
-            if not mplib_mesh.is_file():
-                raise RuntimeError(f"MPlib collision proxy is missing: {mplib_mesh}")
-        contents = ET.tostring(root, encoding="utf-8", xml_declaration=True)
-        temporary_path = output_path.with_suffix(f".{os.getpid()}.tmp")
-        temporary_path.write_bytes(contents)
-        os.replace(temporary_path, output_path)
+                    if len(parts) < 1:
+                        raise RuntimeError(
+                            f"CoACD returned no PiPER collision parts for {path}"
+                        )
+                    link.remove(collision)
+                    for part_index, (vertices, faces) in enumerate(parts):
+                        part = trimesh.Trimesh(
+                            vertices=np.asarray(vertices, dtype=np.float64),
+                            faces=np.asarray(faces, dtype=np.int64),
+                            process=True,
+                        )
+                        if not part.is_watertight or not part.is_volume:
+                            raise RuntimeError(
+                                f"CoACD produced an invalid collision part for {path}"
+                            )
+                        proxy_path = cache_dir / (
+                            f"{link.attrib['name']}-{collision_index}-{part_index}.convex.stl"
+                        )
+                        temporary_proxy = proxy_path.with_suffix(
+                            f".{os.getpid()}.tmp"
+                        )
+                        part.export(temporary_proxy, file_type="stl")
+                        os.replace(temporary_proxy, proxy_path)
+                        proxy_collision = copy.deepcopy(collision)
+                        proxy_mesh = proxy_collision.find("geometry/mesh")
+                        if proxy_mesh is None:
+                            raise RuntimeError("Copied collision lost its mesh geometry")
+                        proxy_mesh.set("filename", proxy_path.name)
+                        link.append(proxy_collision)
+
+            for mesh_node in root.findall(".//collision/geometry/mesh"):
+                cached_mesh = cache_dir / mesh_node.attrib["filename"]
+                if not cached_mesh.is_file():
+                    raise RuntimeError(
+                        f"Planning collision mesh is missing: {cached_mesh}"
+                    )
+            contents = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+            temporary_path = output_path.with_suffix(f".{os.getpid()}.tmp")
+            temporary_path.write_bytes(contents)
+            os.replace(temporary_path, output_path)
         return output_path
 
     _build_kinematic_planning_urdf = _build_collision_planning_urdf
