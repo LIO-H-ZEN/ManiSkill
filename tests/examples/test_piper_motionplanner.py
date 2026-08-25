@@ -122,6 +122,19 @@ def test_planning_urdf_preserves_collision_and_removes_render_geometry(
     assert root.find("./link").attrib["name"] == "base"
 
 
+def test_collision_model_fingerprint_includes_srdf_contents(tmp_path) -> None:
+    source = tmp_path / "robot.urdf"
+    source.write_text('<robot name="test"><link name="base"/></robot>')
+    srdf = source.with_suffix(".srdf")
+    srdf.write_text('<robot name="test"/>')
+
+    first = PiperMotionPlanningSolver.collision_model_fingerprint(str(source))
+    srdf.write_text('<robot name="changed"/>')
+    second = PiperMotionPlanningSolver.collision_model_fingerprint(str(source))
+
+    assert first != second
+
+
 def test_planning_targets_are_converted_to_robot_base_frame() -> None:
     solver = object.__new__(PiperMotionPlanningSolver)
     solver.base_pose = sapien.Pose([-0.35, 0.0, 0.0])

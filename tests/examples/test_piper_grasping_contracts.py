@@ -59,3 +59,17 @@ def test_candidate_evaluation_requires_failure_reason() -> None:
             failure_stage=FailureStage.IK,
             failure_reason=None,
         )
+
+
+def test_candidate_evaluation_rejects_inconsistent_feasibility_stages() -> None:
+    with pytest.raises(ValueError, match="path feasibility requires IK feasibility"):
+        CandidateEvaluation(
+            candidate_id="candidate",
+            provider=GraspProviderName.ANTIPODAL,
+            pipeline=PipelineName.COMMON,
+            rank=1,
+            failure_stage=FailureStage.PREGRASP_PATH,
+            failure_reason="invalid stage state",
+            geometry_feasible=True,
+            path_feasible=True,
+        )

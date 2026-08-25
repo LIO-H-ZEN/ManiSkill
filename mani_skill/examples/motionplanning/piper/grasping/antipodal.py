@@ -13,7 +13,7 @@ from scipy.spatial import cKDTree
 from .contracts import GraspCandidate, GraspProviderName
 from .geometry import ResolvedObjectGeometry
 
-ANTIPODAL_PROVIDER_VERSION = "mesh_antipodal_v1"
+ANTIPODAL_PROVIDER_VERSION = "mesh_antipodal_v2"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -364,13 +364,20 @@ class AntipodalGraspProvider:
         self, geometry: ResolvedObjectGeometry, *, seed: int
     ) -> list[GraspCandidate]:
         rng = np.random.default_rng(seed)
+        mesh = geometry.proposal_mesh
+        center_of_mass = np.asarray(
+            mesh.center_mass if mesh.is_volume else mesh.centroid,
+            dtype=np.float64,
+        )
+        if center_of_mass.shape != (3,) or not np.all(np.isfinite(center_of_mass)):
+            raise ValueError("Proposal mesh has an invalid center of mass")
         samples = sample_surface_mixed(
-            geometry.proposal_mesh,
+            mesh,
             area_count=self.config.area_samples,
             balanced_count=self.config.balanced_samples,
             rng=rng,
         )
-        pairs = build_contact_pairs(samples, self.config, mesh=geometry.proposal_mesh)
+        pairs = build_contact_pairs(samples, self.config, mesh=mesh)
         proposals = []
         for pair_index, pair in enumerate(pairs):
             first, second = _orthogonal_basis(pair.closing)
@@ -389,12 +396,19 @@ class AntipodalGraspProvider:
                         pair.midpoint / self.config.contact_region_size
                     )
                 )
+                offset = center_of_mass - pair.midpoint
+                com_distance = float(np.linalg.norm(offset))
+                gravity_torque_risk = float(
+                    np.linalg.norm(offset - pair.closing * float(offset @ pair.closing))
+                )
                 proposals.append(
                     (
                         -pair.score,
                         region,
                         pair_index,
                         roll_index,
+                        com_distance,
+                        gravity_torque_risk,
                         transform,
                         pair,
                     )
@@ -403,7 +417,16 @@ class AntipodalGraspProvider:
         selected: list[GraspCandidate] = []
         region_counts: dict[tuple[int, ...], int] = {}
         pose_bins: dict[tuple[int, int, int], list[GraspCandidate]] = {}
-        for _, region, pair_index, roll_index, transform, pair in proposals:
+        for (
+            _,
+            region,
+            pair_index,
+            roll_index,
+            com_distance,
+            gravity_torque_risk,
+            transform,
+            pair,
+        ) in proposals:
             if region_counts.get(region, 0) >= self.config.maximum_per_contact_region:
                 continue
             position_bin = tuple(
@@ -439,6 +462,8 @@ class AntipodalGraspProvider:
                     "provider_version": ANTIPODAL_PROVIDER_VERSION,
                     "contact_region": region,
                     "roll_index": roll_index,
+                    "com_distance": com_distance,
+                    "gravity_torque_risk": gravity_torque_risk,
                 },
             )
             selected.append(candidate)

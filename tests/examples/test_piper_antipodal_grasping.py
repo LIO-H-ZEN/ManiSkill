@@ -116,6 +116,8 @@ def test_antipodal_provider_returns_deterministic_object_local_candidates() -> N
     for left, right in zip(first, second):
         np.testing.assert_allclose(left.object_T_tcp, right.object_T_tcp)
         assert 0.001 <= left.required_width <= 0.068
+        assert left.metadata["com_distance"] >= 0.0
+        assert left.metadata["gravity_torque_risk"] >= 0.0
 
 
 def test_grasp_cache_round_trip_and_negative_entry(tmp_path: pathlib.Path) -> None:

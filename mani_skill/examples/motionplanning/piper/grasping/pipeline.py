@@ -22,6 +22,7 @@ MAX_DESCEND_TRANSLATION_STEP = 0.002
 LIFT_DISTANCE = 0.12
 LEGACY_HOLD_STEPS = 3
 ROBUST_HOLD_STEPS = 10
+COMMON_PIPELINE_VERSION = "piper_common_grasp_pipeline_v1"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -30,6 +31,23 @@ class RankedCandidate:
     clearance_score: float
     ik_cost: float
     path_length: float
+    com_distance: float
+    gravity_torque_risk: float
+
+    def __post_init__(self) -> None:
+        metrics = {
+            "clearance_score": self.clearance_score,
+            "ik_cost": self.ik_cost,
+            "path_length": self.path_length,
+            "com_distance": self.com_distance,
+            "gravity_torque_risk": self.gravity_torque_risk,
+        }
+        if not all(np.isfinite(value) for value in metrics.values()):
+            raise ValueError(f"Candidate ranking metrics must be finite: {metrics}")
+        if any(
+            value < 0.0 for name, value in metrics.items() if name != "clearance_score"
+        ):
+            raise ValueError(f"Candidate ranking costs must be non-negative: {metrics}")
 
 
 def pose_matrix(pose: Any) -> np.ndarray:
@@ -81,12 +99,20 @@ def rank_candidates(
     def bucket(value: float, width: float) -> int:
         return int(math.floor(value / width))
 
+    def normalized_execution_cost(item: RankedCandidate) -> float:
+        return (
+            item.ik_cost / math.pi
+            + item.path_length / 0.5
+            + item.com_distance / 0.1
+            + item.gravity_torque_risk / 0.1
+        )
+
     ordered = sorted(
         candidates,
         key=lambda item: (
             -bucket(item.candidate.proposal_score, 0.05),
             -bucket(item.clearance_score, 0.005),
-            item.ik_cost + item.path_length,
+            normalized_execution_cost(item),
             item.candidate.candidate_id,
         ),
     )

@@ -228,6 +228,63 @@ The MPLib expert, video recorder, trajectory collector, and full
 can be replicated across parallel environments; each environment still gets
 its own randomized pose and robot initial state.
 
+## Experimental antipodal expert benchmark
+
+The default user-facing expert remains the legacy OBB implementation. The
+antipodal implementation is opt-in and is evaluated against an OBB provider
+using the same collision-aware pipeline:
+
+```text
+L0 = OBB + legacy pipeline (regression reference)
+A  = OBB + common collision-aware pipeline
+B  = antipodal + common collision-aware pipeline
+```
+
+First materialize deterministic episodes with post-settle state, then provide
+an object-category JSON mapping each stable object ID to one of
+`simple_convex`, `thin_flat`, `ring_u_concave`, or `multipart_slender`.
+Freeze a 24-object pilot with six objects per category:
+
+```bash
+uv run python scripts/freeze_lift_anything_benchmark.py \
+  --episode-manifest /path/to/materialized.json \
+  --category-map /path/to/categories.json \
+  --output /path/to/pilot.json \
+  --split pilot \
+  --poses-per-object 5
+```
+
+Generate the reusable 256-candidate object-local cache and run the resumable
+paired benchmark. Each episode result is written separately before aggregation,
+so an interrupted worker can continue without losing completed shards:
+
+```bash
+uv run python scripts/generate_lift_anything_grasp_cache.py \
+  --object-manifest /path/to/objects.json \
+  --cache-dir /path/to/grasp-cache \
+  --output-manifest /path/to/grasp-cache-manifest.json \
+  --num-procs 32
+
+uv run python scripts/run_lift_anything_grasp_benchmark.py \
+  --benchmark-manifest /path/to/pilot.json \
+  --grasp-cache-dir /path/to/grasp-cache \
+  --output-dir /path/to/pilot-results \
+  --groups L0,A,B \
+  --num-procs 32 \
+  --render-backends cuda:0
+```
+
+After pilot tuning, freeze the formal set with `--split formal` and
+`--exclude-manifest /path/to/pilot.json`. The formal manifest records hashes
+for the frame convention, geometry preprocessing, sampler configuration, and
+collision proxy. The report uses object-level paired bootstrap and only marks
+Antipodal promotable when its robust success improves by at least ten
+percentage points, the 95% confidence interval is above zero, and the simple
+convex control interval remains above -2 percentage points.
+The end-to-end runner reports gripper-only oracle recall as `not_run`/`null`;
+populate that metric only from a separate physics-oracle sweep instead of
+inferring it from arm IK or execution outcomes.
+
 ## Runtime options
 
 Select a different GPU renderer:
@@ -252,10 +309,18 @@ Show every supported option:
 ## Implementation entry points
 
 - `solutions/lift_cube.py`: adaptive grasp pose and fixed-cube expert.
-- `solutions/lift_anything.py`: bounded OBB-based grasp candidates and
-  object-generalized expert.
+- `solutions/lift_anything.py`: legacy OBB expert plus opt-in common OBB and
+  antipodal pipelines.
+- `grasping/`: geometry resolution, antipodal proposals, cache, collision
+  checks, oracle contracts, and benchmark analysis.
 - `motionplanner.py`: PIPER-specific MPLib planning and trajectory execution.
 - `scripts/run_piper_lift_tasks.py`: environment validation, expert dispatch,
   and video recording.
 - `scripts/collect_lift_cube_piper.py`: LiftCube trajectory collection.
 - `scripts/collect_lift_anything_piper.py`: LiftAnything trajectory collection.
+- `scripts/generate_lift_anything_grasp_cache.py`: parallel object-local cache
+  generation.
+- `scripts/freeze_lift_anything_benchmark.py`: stratified pilot/formal manifest
+  freezing.
+- `scripts/run_lift_anything_grasp_benchmark.py`: resumable L0/A/B execution and
+  paired analysis.

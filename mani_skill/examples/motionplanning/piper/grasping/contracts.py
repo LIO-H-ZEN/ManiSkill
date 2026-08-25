@@ -110,9 +110,15 @@ class CandidateEvaluation:
     clearance_score: float | None = None
     ik_cost: float | None = None
     path_length: float | None = None
+    com_distance: float | None = None
+    gravity_torque_risk: float | None = None
     max_lift_height: float = 0.0
     legacy_success_3step: bool = False
     robust_success_10step: bool = False
+    geometry_feasible: bool = False
+    ik_feasible: bool = False
+    path_feasible: bool = False
+    executed: bool = False
 
     def __post_init__(self) -> None:
         if self.rank <= 0:
@@ -127,6 +133,12 @@ class CandidateEvaluation:
             raise ValueError(
                 "successful candidate evaluation cannot have failure_reason"
             )
+        if self.ik_feasible and not self.geometry_feasible:
+            raise ValueError("IK feasibility requires geometry feasibility")
+        if self.path_feasible and not self.ik_feasible:
+            raise ValueError("path feasibility requires IK feasibility")
+        if self.executed and not self.path_feasible:
+            raise ValueError("candidate execution requires path feasibility")
 
     def to_dict(self) -> dict[str, Any]:
         payload = dataclasses.asdict(self)

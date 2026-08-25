@@ -54,8 +54,8 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
         self.waypoint_validator = None
         self.execution_stage = "idle"
 
-    @staticmethod
-    def _build_collision_planning_urdf(source_path: str) -> pathlib.Path:
+    @classmethod
+    def collision_model_fingerprint(cls, source_path: str) -> str:
         source = pathlib.Path(source_path)
         source_bytes = source.read_bytes()
         root = ET.fromstring(source_bytes)
@@ -74,13 +74,21 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
             if not path.is_file():
                 raise FileNotFoundError(path)
             dependencies.append(path.read_bytes())
-        digest_builder = hashlib.sha256(
-            PiperMotionPlanningSolver.COLLISION_PROXY_VERSION.encode()
-        )
+        digest_builder = hashlib.sha256(cls.COLLISION_PROXY_VERSION.encode())
         for contents in dependencies:
             digest_builder.update(len(contents).to_bytes(8, "little"))
             digest_builder.update(contents)
-        digest = digest_builder.hexdigest()
+        return digest_builder.hexdigest()
+
+    @classmethod
+    def _build_collision_planning_urdf(cls, source_path: str) -> pathlib.Path:
+        source = pathlib.Path(source_path)
+        source_bytes = source.read_bytes()
+        root = ET.fromstring(source_bytes)
+        srdf_path = source.with_suffix(".srdf")
+        if not srdf_path.is_file():
+            raise FileNotFoundError(f"PIPER SRDF is missing: {srdf_path}")
+        digest = cls.collision_model_fingerprint(source_path)
         output_dir = pathlib.Path(tempfile.gettempdir()) / "maniskill_piper_mplib"
         cache_dir = output_dir / digest
         cache_dir.mkdir(parents=True, exist_ok=True)

@@ -182,6 +182,15 @@ def _obb_local_candidates(base_env) -> list[LocalGraspCandidate]:
     )
     world_T_object = pose_matrix(base_env.obj.pose)
     object_T_world = np.linalg.inv(world_T_object)
+    mesh = base_env.obj.get_first_collision_mesh(to_world_frame=False)
+    if mesh is None:
+        raise RuntimeError("invalid-mesh: object has no collision mesh")
+    center_of_mass = np.asarray(
+        mesh.center_mass if mesh.is_volume else mesh.centroid,
+        dtype=np.float64,
+    )
+    if center_of_mass.shape != (3,) or not np.all(np.isfinite(center_of_mass)):
+        raise RuntimeError("invalid-mesh: object has an invalid center of mass")
     local_candidates = []
     for candidate in world_candidates:
         object_T_tcp = object_T_world @ pose_matrix(candidate.pose)
@@ -192,6 +201,11 @@ def _obb_local_candidates(base_env) -> list[LocalGraspCandidate]:
                 center - closing * candidate.required_width * 0.5,
                 center + closing * candidate.required_width * 0.5,
             ]
+        )
+        offset = center_of_mass - center
+        com_distance = float(np.linalg.norm(offset))
+        gravity_torque_risk = float(
+            np.linalg.norm(offset - closing * float(offset @ closing))
         )
         local_candidates.append(
             LocalGraspCandidate(
@@ -204,7 +218,9 @@ def _obb_local_candidates(base_env) -> list[LocalGraspCandidate]:
                 metadata={
                     "contact_region": tuple(
                         int(value) for value in np.floor(center / 0.015)
-                    )
+                    ),
+                    "com_distance": com_distance,
+                    "gravity_torque_risk": gravity_torque_risk,
                 },
             )
         )
@@ -362,6 +378,11 @@ def _evaluate_common_candidates(
                     failure_reason=f"minimum clearance {clearance:.6f} m",
                     antipodal_score=candidate.proposal_score,
                     clearance_score=clearance,
+                    com_distance=float(candidate.metadata["com_distance"]),
+                    gravity_torque_risk=float(
+                        candidate.metadata["gravity_torque_risk"]
+                    ),
+                    geometry_feasible=True,
                 )
             )
             continue
@@ -371,6 +392,8 @@ def _evaluate_common_candidates(
                 clearance_score=clearance,
                 ik_cost=0.0,
                 path_length=0.0,
+                com_distance=float(candidate.metadata["com_distance"]),
+                gravity_torque_risk=float(candidate.metadata["gravity_torque_risk"]),
             )
         )
     ik_budget = rank_candidates(preliminary, maximum_candidates=64)
@@ -408,6 +431,9 @@ def _evaluate_common_candidates(
                         failure_reason=status,
                         antipodal_score=item.candidate.proposal_score,
                         clearance_score=item.clearance_score,
+                        com_distance=item.com_distance,
+                        gravity_torque_risk=item.gravity_torque_risk,
+                        geometry_feasible=True,
                     )
                 )
                 continue
@@ -428,6 +454,10 @@ def _evaluate_common_candidates(
                         antipodal_score=item.candidate.proposal_score,
                         clearance_score=item.clearance_score,
                         ik_cost=ik_cost,
+                        com_distance=item.com_distance,
+                        gravity_torque_risk=item.gravity_torque_risk,
+                        geometry_feasible=True,
+                        ik_feasible=True,
                     )
                 )
                 continue
@@ -437,6 +467,8 @@ def _evaluate_common_candidates(
                     clearance_score=item.clearance_score,
                     ik_cost=ik_cost,
                     path_length=_path_length(path),
+                    com_distance=item.com_distance,
+                    gravity_torque_risk=item.gravity_torque_risk,
                 )
             )
         finally:
@@ -606,6 +638,12 @@ def solve(
                         clearance_score=item.clearance_score,
                         ik_cost=item.ik_cost,
                         path_length=item.path_length,
+                        com_distance=item.com_distance,
+                        gravity_torque_risk=item.gravity_torque_risk,
+                        geometry_feasible=True,
+                        ik_feasible=True,
+                        path_feasible=True,
+                        executed=True,
                     )
                 )
                 continue
@@ -628,11 +666,17 @@ def solve(
                     clearance_score=item.clearance_score,
                     ik_cost=item.ik_cost,
                     path_length=item.path_length,
+                    com_distance=item.com_distance,
+                    gravity_torque_risk=item.gravity_torque_risk,
                     max_lift_height=float(
                         np.asarray(info.get("lift_height", 0.0)).reshape(-1)[0]
                     ),
                     legacy_success_3step=legacy,
                     robust_success_10step=robust,
+                    geometry_feasible=True,
+                    ik_feasible=True,
+                    path_feasible=True,
+                    executed=True,
                 )
             )
             if robust:

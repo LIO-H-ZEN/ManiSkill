@@ -146,6 +146,42 @@ class StrictEpisodeRecorder(gym.Wrapper):
         self._current_obs = transition[0]
         return transition
 
+    @property
+    def step_count(self) -> int:
+        return len(self.frames)
+
+
+class MetricsEpisodeRecorder(gym.Wrapper):
+    """Track benchmark outcomes without retaining RGB observations."""
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.expert_stage = "reset"
+        self.step_count = 0
+        self.max_lift_height = 0.0
+
+    def reset(self, **kwargs):
+        transition = self.env.reset(**kwargs)
+        self.expert_stage = "reset"
+        self.step_count = 0
+        self.max_lift_height = 0.0
+        return transition
+
+    def step(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        if action.shape != (7,) or not np.all(np.isfinite(action)):
+            raise ValueError(f"Invalid PIPER action: {action}")
+        if not self.action_space.contains(action):
+            raise ValueError(f"PIPER expert action would be clipped: {action}")
+        transition = self.env.step(action)
+        self.step_count += 1
+        if "lift_height" in transition[4]:
+            self.max_lift_height = max(
+                self.max_lift_height,
+                float(_to_numpy(transition[4]["lift_height"]).reshape(-1)[0]),
+            )
+        return transition
+
 
 @dataclasses.dataclass(frozen=True)
 class AttemptResult:
@@ -223,6 +259,7 @@ def collect_attempt(
     provider: str = GraspProviderName.OBB.value,
     pipeline: str = PipelineName.LEGACY.value,
     grasp_cache_dir: str | None = None,
+    record_trajectory: bool = True,
 ) -> AttemptResult:
     spec = EpisodeSpec.from_dict(spec_dict)
     provider_name = GraspProviderName(provider)
@@ -233,15 +270,19 @@ def collect_attempt(
     env = gym.make(
         "LiftAnythingPiper-v1",
         episode_spec=spec.to_dict(),
-        obs_mode="rgb",
+        obs_mode="rgb" if record_trajectory else "state",
         control_mode="pd_joint_pos",
         sim_backend="physx_cpu",
         num_envs=1,
         max_episode_steps=160 if pipeline_name is PipelineName.COMMON else 100,
         render_backend=render_backend,
         success_streak_steps=10 if pipeline_name is PipelineName.COMMON else 3,
+        clutter=0,
+        domain_rand_freq=0,
     )
-    recorder = StrictEpisodeRecorder(env)
+    recorder = (
+        StrictEpisodeRecorder(env) if record_trajectory else MetricsEpisodeRecorder(env)
+    )
     try:
         result = solve(
             recorder,
@@ -261,7 +302,23 @@ def collect_attempt(
                 False,
                 result.reason,
                 result.attempted_candidates,
-                len(recorder.frames),
+                recorder.step_count,
+                recorder.max_lift_height,
+                None,
+                None,
+                provider_name.value,
+                pipeline_name.value,
+                evaluations,
+            )
+        if not record_trajectory:
+            return AttemptResult(
+                spec.stable_episode_id,
+                spec.object_spec.stable_id,
+                spec.object_spec.source,
+                True,
+                "accepted",
+                result.attempted_candidates,
+                recorder.step_count,
                 recorder.max_lift_height,
                 None,
                 None,
@@ -280,7 +337,7 @@ def collect_attempt(
             "episode_spec_fingerprint": spec.fingerprint,
             "candidate_id": result.candidate_id,
             "attempted_candidates": result.attempted_candidates,
-            "steps": len(recorder.frames),
+            "steps": recorder.step_count,
             "max_lift_height": recorder.max_lift_height,
             "prompt": PROMPT,
             "camera_contract": "piper_sim_camera_v1",
@@ -299,7 +356,7 @@ def collect_attempt(
             True,
             "accepted",
             result.attempted_candidates,
-            len(recorder.frames),
+            recorder.step_count,
             recorder.max_lift_height,
             str(shard_path),
             digest,
@@ -315,7 +372,7 @@ def collect_attempt(
             False,
             f"{type(error).__name__}: {error}",
             0,
-            len(recorder.frames),
+            recorder.step_count,
             recorder.max_lift_height,
             None,
             None,
@@ -353,6 +410,11 @@ def main() -> None:
     )
     parser.add_argument("--grasp-cache-dir", type=pathlib.Path)
     parser.add_argument(
+        "--metrics-only",
+        action="store_true",
+        help="Skip RGB capture and trajectory shards for benchmark sweeps.",
+    )
+    parser.add_argument(
         "--require-settled-state",
         action="store_true",
         help="Reject legacy manifests that cannot guarantee paired post-settle replay.",
@@ -388,6 +450,7 @@ def main() -> None:
                 grasp_cache_dir=(
                     None if args.grasp_cache_dir is None else str(args.grasp_cache_dir)
                 ),
+                record_trajectory=not args.metrics_only,
             ): spec.stable_episode_id
             for index, spec in enumerate(specs)
         }

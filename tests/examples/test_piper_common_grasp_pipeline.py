@@ -68,6 +68,8 @@ def test_rank_candidates_uses_buckets_and_contact_diversity() -> None:
             clearance_score=0.02,
             ik_cost=float(index),
             path_length=0.0,
+            com_distance=0.0,
+            gravity_torque_risk=0.0,
         )
         for index in range(10)
     ]
@@ -79,3 +81,29 @@ def test_rank_candidates_uses_buckets_and_contact_diversity() -> None:
         sum(item.candidate.metadata["contact_region"] == (0, 0, 0) for item in selected)
         == 4
     )
+
+
+def test_rank_candidates_uses_com_and_gravity_cost_after_quality_buckets() -> None:
+    candidates = [
+        RankedCandidate(
+            candidate=_candidate(candidate_id, score=0.91),
+            clearance_score=0.02,
+            ik_cost=0.5,
+            path_length=0.1,
+            com_distance=com_distance,
+            gravity_torque_risk=gravity_torque_risk,
+        )
+        for candidate_id, com_distance, gravity_torque_risk in (
+            ("high-com", 0.08, 0.01),
+            ("high-torque", 0.01, 0.08),
+            ("balanced", 0.01, 0.01),
+        )
+    ]
+
+    selected = rank_candidates(candidates, maximum_candidates=3)
+
+    assert [item.candidate.candidate_id for item in selected] == [
+        "balanced",
+        "high-com",
+        "high-torque",
+    ]
