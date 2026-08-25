@@ -202,13 +202,42 @@ def test_evaluate_uses_relative_settled_height_and_grasp() -> None:
     env.success_streak = torch.tensor([2, 2], dtype=torch.int32)
     env.streak_updated_at = torch.tensor([2, 2], dtype=torch.int32)
     env._elapsed_steps = torch.tensor([3, 3], dtype=torch.int32)
+    env.success_streak_steps = 3
 
     info = env.evaluate()
 
     torch.testing.assert_close(info["success"], torch.tensor([True, False]))
     torch.testing.assert_close(
+        info["legacy_success_3step"], torch.tensor([True, False])
+    )
+    torch.testing.assert_close(
+        info["robust_success_10step"], torch.tensor([False, False])
+    )
+    torch.testing.assert_close(
         info["success_streak"], torch.tensor([3, 0], dtype=torch.int32)
     )
+
+
+def test_evaluate_can_require_robust_ten_step_hold() -> None:
+    env = object.__new__(LiftAnythingPiperEnv)
+    env.object_rest_z = torch.tensor([0.04])
+    env.obj = SimpleNamespace(
+        pose=SimpleNamespace(p=torch.tensor([[0.0, 0.0, 0.04 + LIFT_HEIGHT]]))
+    )
+    env.agent = SimpleNamespace(is_grasping=lambda obj: torch.tensor([True]))
+    env.success_streak = torch.tensor([8], dtype=torch.int32)
+    env.streak_updated_at = torch.tensor([8], dtype=torch.int32)
+    env._elapsed_steps = torch.tensor([9], dtype=torch.int32)
+    env.success_streak_steps = 10
+
+    ninth = env.evaluate()
+    env._elapsed_steps = torch.tensor([10], dtype=torch.int32)
+    tenth = env.evaluate()
+
+    assert not bool(ninth["success"][0])
+    assert bool(ninth["legacy_success_3step"][0])
+    assert bool(tenth["success"][0])
+    assert bool(tenth["robust_success_10step"][0])
 
 
 def test_environment_is_registered_with_locked_horizon() -> None:

@@ -1,12 +1,14 @@
 import hashlib
 import os
 import pathlib
+import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 
 import mplib
 import numpy as np
 import sapien
+import trimesh
 
 from mani_skill.envs.sapien_env import BaseEnv
 from mani_skill.examples.motionplanning.two_finger_gripper.motionplanner import (
@@ -20,6 +22,7 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
     OPEN = 1.0
     CLOSED = -1.0
     MOVE_GROUP = "piper_tcp"
+    COLLISION_PROXY_VERSION = "piper_collision_proxy_v3"
 
     def __init__(
         self,
@@ -48,31 +51,98 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
         )
         self.episode_done = False
         self.last_transition = None
+        self.waypoint_validator = None
+        self.execution_stage = "idle"
 
     @staticmethod
-    def _build_kinematic_planning_urdf(source_path: str) -> pathlib.Path:
+    def _build_collision_planning_urdf(source_path: str) -> pathlib.Path:
         source = pathlib.Path(source_path)
         source_bytes = source.read_bytes()
-        digest = hashlib.sha256(source_bytes).hexdigest()
+        root = ET.fromstring(source_bytes)
+        srdf_path = source.with_suffix(".srdf")
+        if not srdf_path.is_file():
+            raise FileNotFoundError(f"PIPER SRDF is missing: {srdf_path}")
+        dependencies = [source_bytes, srdf_path.read_bytes()]
+        for mesh_node in root.findall(".//collision/geometry/mesh"):
+            filename = mesh_node.attrib.get("filename")
+            if not filename:
+                raise ValueError("PIPER collision mesh is missing filename")
+            path = pathlib.Path(filename)
+            if not path.is_absolute():
+                path = source.parent / path
+            path = path.resolve()
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            dependencies.append(path.read_bytes())
+        digest_builder = hashlib.sha256(
+            PiperMotionPlanningSolver.COLLISION_PROXY_VERSION.encode()
+        )
+        for contents in dependencies:
+            digest_builder.update(len(contents).to_bytes(8, "little"))
+            digest_builder.update(contents)
+        digest = digest_builder.hexdigest()
         output_dir = pathlib.Path(tempfile.gettempdir()) / "maniskill_piper_mplib"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"piper_kinematic_{digest}.urdf"
+        cache_dir = output_dir / digest
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        output_path = cache_dir / "piper_collision.urdf"
         if output_path.exists():
             return output_path
 
-        root = ET.fromstring(source_bytes)
         for link in root.findall("link"):
-            for tag in ("collision", "visual", "inertial"):
+            for tag in ("visual", "inertial"):
                 for node in list(link.findall(tag)):
                     link.remove(node)
+            for collision in list(link.findall("collision")):
+                mesh_node = collision.find("geometry/mesh")
+                if mesh_node is None:
+                    continue
+                path = pathlib.Path(mesh_node.attrib["filename"])
+                if not path.is_absolute():
+                    path = source.parent / path
+                path = path.resolve()
+                mesh = trimesh.load(path, force="mesh", process=True)
+                if not isinstance(mesh, trimesh.Trimesh) or len(mesh.faces) == 0:
+                    raise ValueError(f"Invalid PIPER collision mesh: {path}")
+                if mesh.is_watertight and mesh.is_volume:
+                    cached_source = cache_dir / path.name
+                    temporary_source = cached_source.with_suffix(f".{os.getpid()}.tmp")
+                    shutil.copyfile(path, temporary_source)
+                    os.replace(temporary_source, cached_source)
+                    shutil.copyfile(
+                        cached_source,
+                        cached_source.with_name(cached_source.name + ".convex.stl"),
+                    )
+                    mesh_node.set("filename", cached_source.name)
+                    continue
+                repaired = mesh.convex_hull
+                if not repaired.is_watertight or not repaired.is_volume:
+                    raise ValueError(f"Failed to repair PIPER collision mesh: {path}")
+                proxy_path = cache_dir / f"{path.stem}.repaired.stl"
+                temporary_proxy = proxy_path.with_suffix(f".{os.getpid()}.tmp")
+                repaired.export(temporary_proxy, file_type="stl")
+                os.replace(temporary_proxy, proxy_path)
+                shutil.copyfile(
+                    proxy_path,
+                    proxy_path.with_name(proxy_path.name + ".convex.stl"),
+                )
+                mesh_node.set("filename", proxy_path.name)
+        for mesh_node in root.findall(".//collision/geometry/mesh"):
+            cached_mesh = cache_dir / mesh_node.attrib["filename"]
+            if not cached_mesh.is_file():
+                raise RuntimeError(f"Planning collision mesh is missing: {cached_mesh}")
+            mplib_mesh = cached_mesh.with_name(cached_mesh.name + ".convex.stl")
+            if not mplib_mesh.is_file():
+                raise RuntimeError(f"MPlib collision proxy is missing: {mplib_mesh}")
         contents = ET.tostring(root, encoding="utf-8", xml_declaration=True)
         temporary_path = output_path.with_suffix(f".{os.getpid()}.tmp")
         temporary_path.write_bytes(contents)
         os.replace(temporary_path, output_path)
         return output_path
 
+    _build_kinematic_planning_urdf = _build_collision_planning_urdf
+
     def setup_planner(self):
-        planning_urdf = self._build_kinematic_planning_urdf(
+        planning_urdf = self._build_collision_planning_urdf(
             str(self.env_agent.urdf_path)
         )
         link_names = [link.get_name() for link in self.robot.get_links()]
@@ -91,6 +161,21 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
             np.asarray(planner.joint_acc_limits) * self.joint_acc_limits
         )
         return planner
+
+    def set_collision_point_cloud(
+        self, points: np.ndarray, *, radius: float = 0.005
+    ) -> None:
+        points = np.asarray(points, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 3 or not np.all(np.isfinite(points)):
+            raise ValueError("collision point cloud must have shape (N, 3)")
+        if len(points) == 0 or radius <= 0.0:
+            raise ValueError("collision point cloud and radius must be non-empty")
+        base_matrix = self.base_pose.inv().to_transformation_matrix()
+        self.all_collision_pts = (
+            base_matrix[:3, :3] @ points.T + base_matrix[:3, 3:4]
+        ).T
+        self.use_point_cloud = True
+        self.planner.update_point_cloud(self.all_collision_pts, radius=radius)
 
     def _transform_pose_for_planning(self, target: sapien.Pose) -> sapien.Pose:
         # MPLib 0.1.1 fails to convert world targets for a non-zero base pose.
@@ -123,6 +208,11 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
         for index in range(len(positions) + refine_steps):
             qpos = positions[min(index, len(positions) - 1)]
             transition = self._step(np.hstack([qpos, self.gripper_state]))
+            if self.waypoint_validator is not None:
+                self.waypoint_validator(
+                    stage=self.execution_stage,
+                    progress=(index + 1) / (len(positions) + refine_steps),
+                )
             if self.episode_done:
                 break
         return transition
@@ -134,9 +224,30 @@ class PiperMotionPlanningSolver(TwoFingerGripperMotionPlanningSolver):
             raise ValueError(f"Gripper steps must be positive, got {steps}")
         self.gripper_state = state
         transition = self.last_transition
-        for _ in range(steps):
+        for index in range(steps):
             qpos = self.robot.get_qpos()[0, :6].cpu().numpy()
             transition = self._step(np.hstack([qpos, self.gripper_state]))
+            if self.waypoint_validator is not None:
+                self.waypoint_validator(
+                    stage=self.execution_stage,
+                    progress=(index + 1) / steps,
+                )
+            if self.episode_done:
+                break
+        return transition
+
+    def hold_current(self, steps: int):
+        if steps <= 0:
+            raise ValueError("hold steps must be positive")
+        transition = self.last_transition
+        for index in range(steps):
+            qpos = self.robot.get_qpos()[0, :6].cpu().numpy()
+            transition = self._step(np.hstack([qpos, self.gripper_state]))
+            if self.waypoint_validator is not None:
+                self.waypoint_validator(
+                    stage=self.execution_stage,
+                    progress=(index + 1) / steps,
+                )
             if self.episode_done:
                 break
         return transition

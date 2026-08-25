@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from mani_skill import PACKAGE_ASSET_DIR
+
 from .contracts import FRAME_CONVENTION_VERSION, GraspCandidate, GraspProviderName
 from .geometry import GEOMETRY_PREPROCESS_VERSION, ResolvedObjectGeometry
 
@@ -29,6 +31,19 @@ def dependency_files_hash(paths: list[pathlib.Path]) -> str:
         digest.update(len(contents).to_bytes(8, "little"))
         digest.update(contents)
     return digest.hexdigest()
+
+
+def piper_gripper_geometry_hash() -> str:
+    root = pathlib.Path(PACKAGE_ASSET_DIR) / "robots/piper"
+    return dependency_files_hash(
+        [
+            root / "piper_description.urdf",
+            root / "piper_description.srdf",
+            root / "meshes/gripper_base.convex.stl",
+            root / "meshes/link7.convex.stl",
+            root / "meshes/link8.convex.stl",
+        ]
+    )
 
 
 def cache_key(

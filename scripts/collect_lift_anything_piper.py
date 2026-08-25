@@ -22,6 +22,10 @@ from mani_skill.envs.tasks.pick_anything.episode_specs import (
     EpisodeSpec,
     load_episode_specs_manifest,
 )
+from mani_skill.examples.motionplanning.piper.grasping.contracts import (
+    GraspProviderName,
+    PipelineName,
+)
 from mani_skill.examples.motionplanning.piper.solutions.lift_anything import solve
 
 CAMERA_UIDS = ("base_camera", "wrist_camera", "side_camera")
@@ -155,6 +159,9 @@ class AttemptResult:
     max_lift_height: float
     shard_path: str | None
     shard_sha256: str | None
+    provider: str = GraspProviderName.OBB.value
+    pipeline: str = PipelineName.LEGACY.value
+    candidate_evaluations: tuple[dict[str, Any], ...] = ()
 
 
 def _write_episode(
@@ -213,8 +220,15 @@ def collect_attempt(
     spec_dict: dict[str, Any],
     output_dir: str,
     render_backend: str,
+    provider: str = GraspProviderName.OBB.value,
+    pipeline: str = PipelineName.LEGACY.value,
+    grasp_cache_dir: str | None = None,
 ) -> AttemptResult:
     spec = EpisodeSpec.from_dict(spec_dict)
+    provider_name = GraspProviderName(provider)
+    pipeline_name = PipelineName(pipeline)
+    if pipeline_name is PipelineName.COMMON and spec.settled_object_state is None:
+        raise ValueError("common pipeline requires a post-settle EpisodeSpec")
     output_path = pathlib.Path(output_dir)
     env = gym.make(
         "LiftAnythingPiper-v1",
@@ -223,12 +237,22 @@ def collect_attempt(
         control_mode="pd_joint_pos",
         sim_backend="physx_cpu",
         num_envs=1,
-        max_episode_steps=100,
+        max_episode_steps=160 if pipeline_name is PipelineName.COMMON else 100,
         render_backend=render_backend,
+        success_streak_steps=10 if pipeline_name is PipelineName.COMMON else 3,
     )
     recorder = StrictEpisodeRecorder(env)
     try:
-        result = solve(recorder, seed=spec.environment_seed)
+        result = solve(
+            recorder,
+            seed=spec.environment_seed,
+            provider=provider_name,
+            pipeline=pipeline_name,
+            grasp_cache_dir=(
+                None if grasp_cache_dir is None else pathlib.Path(grasp_cache_dir)
+            ),
+        )
+        evaluations = tuple(item.to_dict() for item in result.evaluations)
         if not result.success:
             return AttemptResult(
                 spec.stable_episode_id,
@@ -241,6 +265,9 @@ def collect_attempt(
                 recorder.max_lift_height,
                 None,
                 None,
+                provider_name.value,
+                pipeline_name.value,
+                evaluations,
             )
         raw = np.stack([frame["action_command_raw"] for frame in recorder.frames])
         applied = np.stack(
@@ -258,6 +285,9 @@ def collect_attempt(
             "prompt": PROMPT,
             "camera_contract": "piper_sim_camera_v1",
             "control_mode": "pd_joint_pos",
+            "provider": provider_name.value,
+            "pipeline": pipeline_name.value,
+            "candidate_evaluations": evaluations,
         }
         shard_path, digest = _write_episode(
             output_path, spec, recorder.frames, metadata
@@ -273,6 +303,9 @@ def collect_attempt(
             recorder.max_lift_height,
             str(shard_path),
             digest,
+            provider_name.value,
+            pipeline_name.value,
+            evaluations,
         )
     except Exception as error:
         return AttemptResult(
@@ -286,6 +319,9 @@ def collect_attempt(
             recorder.max_lift_height,
             None,
             None,
+            provider_name.value,
+            pipeline_name.value,
+            (),
         )
     finally:
         recorder.close()
@@ -306,6 +342,17 @@ def main() -> None:
     parser.add_argument("--num-procs", type=int, default=32)
     parser.add_argument("--render-backends", default="cuda:0")
     parser.add_argument(
+        "--provider",
+        choices=[item.value for item in GraspProviderName],
+        default=GraspProviderName.OBB.value,
+    )
+    parser.add_argument(
+        "--pipeline",
+        choices=[item.value for item in PipelineName],
+        default=PipelineName.LEGACY.value,
+    )
+    parser.add_argument("--grasp-cache-dir", type=pathlib.Path)
+    parser.add_argument(
         "--require-settled-state",
         action="store_true",
         help="Reject legacy manifests that cannot guarantee paired post-settle replay.",
@@ -315,7 +362,9 @@ def main() -> None:
         raise ValueError("num-procs must be positive")
     specs = load_specs(
         args.episode_manifest,
-        require_settled_state=args.require_settled_state,
+        require_settled_state=(
+            args.require_settled_state or args.pipeline == PipelineName.COMMON.value
+        ),
     )
     render_backends = tuple(
         item.strip() for item in args.render_backends.split(",") if item.strip()
@@ -334,6 +383,11 @@ def main() -> None:
                 spec_dict=spec.to_dict(),
                 output_dir=str(args.output_dir),
                 render_backend=render_backends[index % len(render_backends)],
+                provider=args.provider,
+                pipeline=args.pipeline,
+                grasp_cache_dir=(
+                    None if args.grasp_cache_dir is None else str(args.grasp_cache_dir)
+                ),
             ): spec.stable_episode_id
             for index, spec in enumerate(specs)
         }
@@ -349,6 +403,8 @@ def main() -> None:
         ).hexdigest(),
         "attempted": len(results),
         "accepted": sum(result.accepted for result in results),
+        "provider": args.provider,
+        "pipeline": args.pipeline,
         "results": [dataclasses.asdict(result) for result in results],
     }
     (args.output_dir / "manifest.json").write_text(

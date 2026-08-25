@@ -91,6 +91,7 @@ class LiftAnythingPiperEnv(PickAnythingEnv):
         clutter: int | str | ClutterRandomizer | None = None,
         clutter_sources: Sequence[Union[ObjectSource, str]] | None = None,
         lighting_randomizer: Randomizer | None = None,
+        success_streak_steps: int = SUCCESS_STREAK_STEPS,
         **kwargs,
     ):
         if robot_uids not in PIPER_UIDS:
@@ -107,6 +108,9 @@ class LiftAnythingPiperEnv(PickAnythingEnv):
             )
         if episode_spec is not None and num_envs != 1:
             raise ValueError("episode_spec requires num_envs=1")
+        if isinstance(success_streak_steps, bool) or success_streak_steps < 1:
+            raise ValueError("success_streak_steps must be a positive integer")
+        self.success_streak_steps = int(success_streak_steps)
         self.episode_spec = (
             EpisodeSpec.from_dict(episode_spec)
             if isinstance(episode_spec, Mapping)
@@ -420,7 +424,9 @@ class LiftAnythingPiperEnv(PickAnythingEnv):
             is_lifted & is_grasped,
         )
         return {
-            "success": self.success_streak >= SUCCESS_STREAK_STEPS,
+            "success": self.success_streak >= self.success_streak_steps,
+            "legacy_success_3step": self.success_streak >= SUCCESS_STREAK_STEPS,
+            "robust_success_10step": self.success_streak >= 10,
             "is_lifted_10cm": is_lifted,
             "is_grasped": is_grasped,
             "lift_height": lift_height,

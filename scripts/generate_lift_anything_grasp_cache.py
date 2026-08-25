@@ -9,7 +9,6 @@ import json
 import multiprocessing
 import pathlib
 
-from mani_skill import ASSET_DIR
 from mani_skill.envs.tasks.pick_anything.episode_specs import ObjectSpec
 from mani_skill.examples.motionplanning.piper.grasping.antipodal import (
     ANTIPODAL_PROVIDER_VERSION,
@@ -19,7 +18,7 @@ from mani_skill.examples.motionplanning.piper.grasping.antipodal import (
 from mani_skill.examples.motionplanning.piper.grasping.cache import (
     GraspCache,
     cache_key,
-    dependency_files_hash,
+    piper_gripper_geometry_hash,
 )
 from mani_skill.examples.motionplanning.piper.grasping.contracts import (
     GraspProviderName,
@@ -28,20 +27,6 @@ from mani_skill.examples.motionplanning.piper.grasping.geometry import (
     GEOMETRY_PREPROCESS_VERSION,
     resolve_object_geometry,
 )
-
-
-def piper_gripper_geometry_hash() -> str:
-    root = ASSET_DIR.parent / "robots/piper"
-    if not root.is_dir():
-        root = pathlib.Path(__file__).parents[1] / "mani_skill/assets/robots/piper"
-    paths = [
-        root / "piper_description.urdf",
-        root / "piper_description.srdf",
-        root / "meshes/gripper_base.convex.stl",
-        root / "meshes/link7.convex.stl",
-        root / "meshes/link8.convex.stl",
-    ]
-    return dependency_files_hash(paths)
 
 
 def generate_one(*, object_spec_dict: dict, cache_root: str, config_dict: dict) -> dict:
