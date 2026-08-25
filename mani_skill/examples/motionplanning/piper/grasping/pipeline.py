@@ -190,6 +190,140 @@ def scene_collision_points(base_env, *, include_target: bool) -> np.ndarray:
     return np.concatenate(chunks, axis=0)
 
 
+def actor_collision_meshes(actor) -> tuple[trimesh.Trimesh, ...]:
+    """Return the actor's actual PhysX collision shapes in actor-local space."""
+
+    entity = actor._objs[0]
+    body = entity.find_component_by_type(sapien.physx.PhysxRigidDynamicComponent)
+    if body is None:
+        body = entity.find_component_by_type(sapien.physx.PhysxRigidStaticComponent)
+    if body is None:
+        raise RuntimeError(f"collision-body-missing: {actor.name}")
+    meshes = []
+    for shape in body.collision_shapes:
+        if isinstance(
+            shape,
+            (
+                sapien.physx.PhysxCollisionShapeConvexMesh,
+                sapien.physx.PhysxCollisionShapeTriangleMesh,
+            ),
+        ):
+            vertices = np.asarray(shape.vertices, dtype=np.float64) * np.asarray(
+                shape.scale, dtype=np.float64
+            )
+            faces = np.asarray(shape.triangles, dtype=np.int64)
+            mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        elif isinstance(shape, sapien.physx.PhysxCollisionShapeBox):
+            mesh = trimesh.creation.box(
+                extents=2.0 * np.asarray(shape.half_size, dtype=np.float64)
+            )
+        else:
+            raise TypeError(
+                f"Unsupported target collision shape: {type(shape).__name__}"
+            )
+        mesh.apply_transform(pose_matrix(shape.local_pose))
+        meshes.append(mesh)
+    if not meshes:
+        raise RuntimeError(f"collision-shapes-empty: {actor.name}")
+    return tuple(meshes)
+
+
+class TargetGeometryCollisionValidator:
+    """Preflight gripper/target collisions against actual PhysX geometry."""
+
+    def __init__(
+        self,
+        base_env,
+        gripper_geometry: PiperGripperGeometry,
+        *,
+        penetration_tolerance: float = 0.002,
+    ):
+        try:
+            manager = trimesh.collision.CollisionManager()
+        except ValueError as error:
+            raise RuntimeError(
+                "Target geometry validation requires python-fcl; install "
+                "requirements-lift.txt"
+            ) from error
+        self.base_env = base_env
+        self.gripper_geometry = gripper_geometry
+        self.gripper_meshes = gripper_geometry.link_meshes()
+        self.penetration_tolerance = float(penetration_tolerance)
+        self.manager = manager
+        self.target_names = []
+        for index, mesh in enumerate(actor_collision_meshes(base_env.obj)):
+            name = f"target-{index}"
+            self.manager.add_object(name, mesh)
+            self.target_names.append(name)
+
+    def validate_pose(
+        self,
+        world_T_tcp: np.ndarray,
+        *,
+        width: float,
+        allow_pad_contact: bool,
+        progress: float,
+    ) -> None:
+        world_T_object = pose_matrix(self.base_env.obj.pose)
+        for name in self.target_names:
+            self.manager.set_transform(name, world_T_object)
+        for link_name, tcp_T_link in self.gripper_geometry.tcp_link_transforms(
+            width
+        ).items():
+            world_T_link = world_T_tcp @ tcp_T_link
+            colliding, contacts = self.manager.in_collision_single(
+                self.gripper_meshes[link_name],
+                transform=world_T_link,
+                return_data=True,
+            )
+            if not colliding:
+                continue
+            if link_name not in {"link7", "link8"}:
+                raise RuntimeError(f"target-contact-{link_name}")
+            if not allow_pad_contact or progress < 0.8:
+                raise RuntimeError("target-pad-contact-early")
+            if not contacts:
+                raise RuntimeError(f"target-contact-unresolved-{link_name}")
+            for contact in contacts:
+                if float(contact.depth) > self.penetration_tolerance:
+                    raise RuntimeError("target-penetration")
+                if not self.gripper_geometry.is_pad_point(
+                    link_name,
+                    world_T_link,
+                    np.asarray(contact.point, dtype=np.float64),
+                ):
+                    raise RuntimeError(f"target-non-pad-contact-{link_name}")
+
+    def validate_descend_and_closure(
+        self,
+        pregrasp: sapien.Pose,
+        grasp: sapien.Pose,
+        *,
+        contact_width: float,
+        closure_samples: int = 8,
+    ) -> None:
+        grasp_matrix = pose_matrix(grasp)
+        waypoints = dense_translation_waypoints(pregrasp.p, grasp.p)
+        for index, position in enumerate(waypoints):
+            waypoint = grasp_matrix.copy()
+            waypoint[:3, 3] = position
+            self.validate_pose(
+                waypoint,
+                width=0.068,
+                allow_pad_contact=True,
+                progress=(index + 1) / len(waypoints),
+            )
+        for index, width in enumerate(
+            np.linspace(0.068, contact_width, closure_samples)
+        ):
+            self.validate_pose(
+                grasp_matrix,
+                width=float(width),
+                allow_pad_contact=True,
+                progress=(index + 1) / closure_samples,
+            )
+
+
 class TargetContactValidator:
     def __init__(
         self,

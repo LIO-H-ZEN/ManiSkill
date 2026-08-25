@@ -30,7 +30,9 @@ def _origin_matrix(node: ET.Element | None) -> np.ndarray:
 class PiperGripperGeometry:
     tcp_T_gripper_base: np.ndarray
     gripper_base_vertices: np.ndarray
+    gripper_base_faces: np.ndarray
     finger_vertices: dict[str, np.ndarray]
+    finger_faces: dict[str, np.ndarray]
     base_T_finger_origin: dict[str, np.ndarray]
     finger_axes: dict[str, np.ndarray]
     finger_bounds: dict[str, np.ndarray]
@@ -46,7 +48,7 @@ class PiperGripperGeometry:
         base_T_tcp = _origin_matrix(joints["piper_tcp_joint"].find("origin"))
         tcp_T_base = np.linalg.inv(base_T_tcp)
 
-        def collision_vertices(link_name: str) -> np.ndarray:
+        def collision_mesh(link_name: str) -> tuple[np.ndarray, np.ndarray]:
             collision = links[link_name].find("collision")
             if collision is None:
                 raise ValueError(f"PIPER link has no collision geometry: {link_name}")
@@ -56,18 +58,24 @@ class PiperGripperGeometry:
             path = urdf_path.parent / mesh_node.attrib["filename"]
             mesh = trimesh.load(path, force="mesh", process=False)
             vertices = np.asarray(mesh.vertices, dtype=np.float64)
+            faces = np.asarray(mesh.faces, dtype=np.int64)
             scale = _numbers(mesh_node.attrib.get("scale"), (1, 1, 1))
             vertices = vertices * scale
             origin = _origin_matrix(collision.find("origin"))
-            return (origin[:3, :3] @ vertices.T + origin[:3, 3:4]).T
+            return (
+                (origin[:3, :3] @ vertices.T + origin[:3, 3:4]).T,
+                faces,
+            )
 
-        finger_vertices = {
-            name: collision_vertices(name) for name in ("link7", "link8")
-        }
+        gripper_base_vertices, gripper_base_faces = collision_mesh("gripper_base")
+        finger_meshes = {name: collision_mesh(name) for name in ("link7", "link8")}
+        finger_vertices = {name: value[0] for name, value in finger_meshes.items()}
         return cls(
             tcp_T_gripper_base=tcp_T_base,
-            gripper_base_vertices=collision_vertices("gripper_base"),
+            gripper_base_vertices=gripper_base_vertices,
+            gripper_base_faces=gripper_base_faces,
             finger_vertices=finger_vertices,
+            finger_faces={name: value[1] for name, value in finger_meshes.items()},
             base_T_finger_origin={
                 name: _origin_matrix(joints[f"joint{name[-1]}"].find("origin"))
                 for name in ("link7", "link8")
@@ -85,24 +93,54 @@ class PiperGripperGeometry:
             },
         )
 
-    def tcp_vertices(self, width: float) -> np.ndarray:
+    def tcp_link_transforms(self, width: float) -> dict[str, np.ndarray]:
         if not 0.0 <= width <= 0.07:
             raise ValueError("PIPER width must be in [0, 0.07] m")
-        result = [
-            (
-                self.tcp_T_gripper_base[:3, :3] @ self.gripper_base_vertices.T
-                + self.tcp_T_gripper_base[:3, 3:4]
-            ).T
-        ]
+        transforms = {"gripper_base": self.tcp_T_gripper_base}
         positions = {"link7": width * 0.5, "link8": -width * 0.5}
         for name in ("link7", "link8"):
             translation = np.eye(4)
             translation[:3, 3] = self.finger_axes[name] * positions[name]
-            tcp_T_finger = (
-                self.tcp_T_gripper_base @ self.base_T_finger_origin[name] @ translation
+            transforms[name] = (
+                self.tcp_T_gripper_base
+                @ self.base_T_finger_origin[name]
+                @ translation
             )
-            vertices = self.finger_vertices[name]
-            result.append((tcp_T_finger[:3, :3] @ vertices.T + tcp_T_finger[:3, 3:4]).T)
+        return transforms
+
+    def link_meshes(self) -> dict[str, trimesh.Trimesh]:
+        meshes = {
+            "gripper_base": trimesh.Trimesh(
+                vertices=self.gripper_base_vertices,
+                faces=self.gripper_base_faces,
+                process=False,
+            )
+        }
+        meshes.update(
+            {
+                name: trimesh.Trimesh(
+                    vertices=self.finger_vertices[name],
+                    faces=self.finger_faces[name],
+                    process=False,
+                )
+                for name in ("link7", "link8")
+            }
+        )
+        return meshes
+
+    def tcp_vertices(self, width: float) -> np.ndarray:
+        if not 0.0 <= width <= 0.07:
+            raise ValueError("PIPER width must be in [0, 0.07] m")
+        transforms = self.tcp_link_transforms(width)
+        result = []
+        for name, vertices in {
+            "gripper_base": self.gripper_base_vertices,
+            **self.finger_vertices,
+        }.items():
+            transform = transforms[name]
+            result.append(
+                (transform[:3, :3] @ vertices.T + transform[:3, 3:4]).T
+            )
         return np.concatenate(result, axis=0)
 
     def is_pad_point(

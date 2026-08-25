@@ -44,6 +44,7 @@ from mani_skill.examples.motionplanning.piper.grasping.pipeline import (
     ROBUST_HOLD_STEPS,
     RankedCandidate,
     TargetContactValidator,
+    TargetGeometryCollisionValidator,
     dense_translation_waypoints,
     minimum_gripper_clearance,
     pose_matrix,
@@ -353,6 +354,33 @@ def _evaluate_common_candidates(
         env.reset(seed=seed, options={"reconfigure": True})
         grasp_pose = world_grasp_pose(base_env.obj.pose, candidate)
         grasp_matrix = pose_matrix(grasp_pose)
+        target_geometry_validator = TargetGeometryCollisionValidator(
+            base_env, gripper_geometry
+        )
+        try:
+            target_geometry_validator.validate_descend_and_closure(
+                pregrasp_pose(grasp_pose),
+                grasp_pose,
+                contact_width=candidate.required_width,
+            )
+        except RuntimeError as error:
+            evaluations.append(
+                CandidateEvaluation(
+                    candidate_id=candidate.candidate_id,
+                    provider=candidate.source,
+                    pipeline=PipelineName.COMMON,
+                    rank=len(evaluations) + 1,
+                    failure_stage=FailureStage.GRIPPER_COLLISION,
+                    failure_reason=str(error),
+                    antipodal_score=candidate.proposal_score,
+                    com_distance=float(candidate.metadata["com_distance"]),
+                    gravity_torque_risk=float(
+                        candidate.metadata["gravity_torque_risk"]
+                    ),
+                    geometry_feasible=False,
+                )
+            )
+            continue
         clearance = minimum_gripper_clearance(
             grasp_matrix,
             gripper_geometry,
@@ -382,7 +410,7 @@ def _evaluate_common_candidates(
                     gravity_torque_risk=float(
                         candidate.metadata["gravity_torque_risk"]
                     ),
-                    geometry_feasible=True,
+                    geometry_feasible=False,
                 )
             )
             continue
@@ -493,9 +521,15 @@ def _run_common_candidate(
         print_env_info=False,
     )
     gripper_geometry = PiperGripperGeometry.from_package_assets()
+    geometry_validator = TargetGeometryCollisionValidator(base_env, gripper_geometry)
     validator = TargetContactValidator(base_env, gripper_geometry)
     grasp_pose = world_grasp_pose(base_env.obj.pose, candidate)
     pregrasp = pregrasp_pose(grasp_pose)
+    geometry_validator.validate_descend_and_closure(
+        pregrasp,
+        grasp_pose,
+        contact_width=candidate.required_width,
+    )
     grasp_matrix = pose_matrix(grasp_pose)
     for position in dense_translation_waypoints(pregrasp.p, grasp_pose.p):
         waypoint = grasp_matrix.copy()

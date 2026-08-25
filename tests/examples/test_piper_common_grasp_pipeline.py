@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import sapien
+import trimesh
 
 from mani_skill.examples.motionplanning.piper.grasping.contracts import (
     GraspCandidate,
@@ -12,11 +14,13 @@ from mani_skill.examples.motionplanning.piper.grasping.gripper_geometry import (
 )
 from mani_skill.examples.motionplanning.piper.grasping.pipeline import (
     RankedCandidate,
+    TargetGeometryCollisionValidator,
     dense_translation_waypoints,
     minimum_gripper_clearance,
     rank_candidates,
     world_grasp_pose,
 )
+from mani_skill.examples.motionplanning.piper.grasping import pipeline
 
 
 def _candidate(candidate_id: str, *, score: float, region=(0, 0, 0)):
@@ -59,6 +63,51 @@ def test_gripper_clearance_checks_the_full_closure_sweep() -> None:
 
     assert np.isfinite(clearance)
     assert clearance > 0.0
+
+
+def test_target_geometry_validator_rejects_gripper_base_collision(monkeypatch) -> None:
+    pytest.importorskip("fcl")
+    geometry = PiperGripperGeometry.from_package_assets()
+    tcp_T_base = geometry.tcp_link_transforms(0.068)["gripper_base"]
+    base_mesh = geometry.link_meshes()["gripper_base"]
+    center = (
+        tcp_T_base[:3, :3] @ base_mesh.centroid + tcp_T_base[:3, 3]
+    )
+    target = trimesh.creation.box(extents=[0.01, 0.01, 0.01])
+    target.apply_translation(center)
+    base_env = SimpleNamespace(obj=SimpleNamespace(pose=sapien.Pose()))
+    monkeypatch.setattr(pipeline, "actor_collision_meshes", lambda actor: (target,))
+    validator = TargetGeometryCollisionValidator(base_env, geometry)
+
+    with pytest.raises(RuntimeError, match="target-contact-gripper_base"):
+        validator.validate_pose(
+            np.eye(4), width=0.068, allow_pad_contact=False, progress=0.0
+        )
+
+
+def test_target_geometry_validator_samples_descend_and_closure() -> None:
+    validator = object.__new__(TargetGeometryCollisionValidator)
+    calls = []
+    validator.validate_pose = lambda transform, **kwargs: calls.append(
+        (transform.copy(), kwargs)
+    )
+    pregrasp = sapien.Pose([0.0, 0.0, 0.07])
+    grasp = sapien.Pose()
+
+    validator.validate_descend_and_closure(
+        pregrasp, grasp, contact_width=0.02, closure_samples=8
+    )
+
+    descend = calls[:-8]
+    closure = calls[-8:]
+    assert len(descend) >= 35
+    descend_positions = np.asarray([call[0][:3, 3] for call in descend])
+    points = np.vstack([np.asarray(pregrasp.p), descend_positions])
+    assert np.linalg.norm(np.diff(points, axis=0), axis=1).max() <= 0.002 + 1e-7
+    assert all(call[1]["width"] == 0.068 for call in descend)
+    np.testing.assert_allclose(
+        [call[1]["width"] for call in closure], np.linspace(0.068, 0.02, 8)
+    )
 
 
 def test_rank_candidates_uses_buckets_and_contact_diversity() -> None:
