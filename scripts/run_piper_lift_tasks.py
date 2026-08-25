@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import functools
 import json
 import pathlib
 import re
@@ -12,14 +13,19 @@ from typing import Any, Callable, Sequence
 
 import gymnasium as gym
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 import mani_skill.envs  # noqa: F401 - imports register the environments
 from mani_skill.envs.tasks.pick_anything.episode_specs import EpisodeSpec
 from mani_skill.utils import common
-from mani_skill.utils.visualization import put_text_on_image
 from mani_skill.utils.wrappers import RecordEpisode
 
 CAMERA_UIDS = ("base_camera", "wrist_camera", "side_camera")
+CAMERA_LABELS = {
+    "base_camera": "Base camera",
+    "wrist_camera": "Wrist camera",
+    "side_camera": "Side camera",
+}
 ENV_IDS = {
     "liftcube": "LiftCubePiper-v1",
     "liftanything": "LiftAnythingPiper-v1",
@@ -28,7 +34,112 @@ DEFAULT_TASK_PROMPTS = {
     "liftcube": "Pick up the red cube.",
 }
 DEFAULT_VIDEO_DIR = pathlib.Path(__file__).resolve().parents[2] / "piper_lift_videos"
-PROMPT_BAR_HEIGHT = 32
+OVERLAY_FONT_PATH = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "mani_skill/utils/visualization/UbuntuSansMono-Regular.ttf"
+)
+OVERLAY_BACKGROUND = (12, 16, 22, 185)
+OVERLAY_TEXT = (255, 255, 255, 255)
+
+
+@functools.lru_cache(maxsize=None)
+def _overlay_font(size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(OVERLAY_FONT_PATH), size=size)
+
+
+def _text_width(
+    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont
+) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _wrap_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> str:
+    words = text.split()
+    if not words:
+        raise ValueError("overlay text must not be empty")
+
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if _text_width(draw, candidate, font) <= max_width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+            current = ""
+        while _text_width(draw, word, font) > max_width:
+            split_at = len(word) - 1
+            while split_at > 0 and _text_width(draw, word[:split_at], font) > max_width:
+                split_at -= 1
+            if split_at == 0:
+                raise ValueError("overlay width is too small for the selected font")
+            lines.append(word[:split_at])
+            word = word[split_at:]
+        current = word
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
+
+
+def _draw_text_badge(
+    image: np.ndarray,
+    text: str,
+    *,
+    font_size: int,
+    placement: str,
+    margin: int,
+    horizontal_padding: int,
+    vertical_padding: int,
+) -> np.ndarray:
+    if image.ndim != 3 or image.shape[-1] != 3 or image.dtype != np.uint8:
+        raise RuntimeError(
+            "Video frame violates the text overlay contract: "
+            f"shape={image.shape}, dtype={image.dtype}"
+        )
+    if placement not in {"top-left", "bottom-center"}:
+        raise ValueError(f"Unsupported text placement: {placement}")
+
+    canvas = Image.fromarray(image).convert("RGBA")
+    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font = _overlay_font(font_size)
+    max_text_width = image.shape[1] - 2 * (margin + horizontal_padding)
+    wrapped_text = _wrap_text(draw, text, font, max_text_width)
+    bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=2)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    badge_width = text_width + 2 * horizontal_padding
+    badge_height = text_height + 2 * vertical_padding
+
+    if placement == "top-left":
+        left = margin
+        top = margin
+    else:
+        left = (image.shape[1] - badge_width) // 2
+        top = image.shape[0] - margin - badge_height
+    right = left + badge_width
+    bottom = top + badge_height
+    draw.rounded_rectangle(
+        (left, top, right, bottom),
+        radius=min(8, badge_height // 2),
+        fill=OVERLAY_BACKGROUND,
+    )
+    draw.multiline_text(
+        (left + horizontal_padding - bbox[0], top + vertical_padding - bbox[1]),
+        wrapped_text,
+        font=font,
+        fill=OVERLAY_TEXT,
+        spacing=2,
+        align="center" if placement == "bottom-center" else "left",
+    )
+    return np.asarray(Image.alpha_composite(canvas, overlay).convert("RGB")).copy()
 
 
 def _camera_triptych(sensor_images: dict[str, dict[str, Any]]) -> np.ndarray:
@@ -48,7 +159,17 @@ def _camera_triptych(sensor_images: dict[str, dict[str, Any]]) -> np.ndarray:
                 f"{camera_uid} violates the video image contract: "
                 f"shape={image.shape}, dtype={image.dtype}"
             )
-        panels.append(put_text_on_image(image, [camera_uid]))
+        panels.append(
+            _draw_text_badge(
+                image,
+                CAMERA_LABELS[camera_uid],
+                font_size=13,
+                placement="top-left",
+                margin=8,
+                horizontal_padding=6,
+                vertical_padding=4,
+            )
+        )
     return np.concatenate(panels, axis=1)
 
 
@@ -62,9 +183,15 @@ def _with_task_prompt(image: np.ndarray, task_prompt: str) -> np.ndarray:
     prompt = task_prompt.strip()
     if not prompt:
         raise ValueError("task prompt must not be empty")
-    prompt_bar = np.zeros((PROMPT_BAR_HEIGHT, image.shape[1], 3), dtype=np.uint8)
-    prompt_bar = put_text_on_image(prompt_bar, [f"Task: {prompt}"])
-    return np.concatenate([image, prompt_bar], axis=0)
+    return _draw_text_badge(
+        image,
+        prompt,
+        font_size=16,
+        placement="bottom-center",
+        margin=10,
+        horizontal_padding=10,
+        vertical_padding=6,
+    )
 
 
 TaskPrompt = str | Callable[[], str]
@@ -114,7 +241,7 @@ def _resolve_task_prompt(task_prompt: TaskPrompt) -> str:
 
 
 class PromptedRecordEpisode(RecordEpisode):
-    """Record the human render camera with a task-prompt bar."""
+    """Record the human render camera with an in-frame task-prompt overlay."""
 
     def __init__(self, *args, task_prompt: TaskPrompt, **kwargs):
         self.task_prompt = task_prompt

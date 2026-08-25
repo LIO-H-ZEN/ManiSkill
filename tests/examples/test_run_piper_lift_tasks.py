@@ -135,17 +135,36 @@ def test_camera_triptych_has_labeled_panels_in_locked_order() -> None:
     assert np.all(triptych[200, 100] == 10)
     assert np.all(triptych[200, 324] == 20)
     assert np.all(triptych[200, 548] == 30)
+    assert np.max(triptych[:40, :224]) > 200
+    assert np.max(triptych[:40, 224:448]) > 200
+    assert np.max(triptych[:40, 448:]) > 200
 
 
-def test_task_prompt_is_added_in_a_dedicated_bottom_bar() -> None:
+def test_task_prompt_is_overlaid_without_resizing_the_frame() -> None:
     image = np.full((224, 672, 3), 17, dtype=np.uint8)
 
     prompted = launcher._with_task_prompt(image, "Pick up the target object.")
 
-    assert prompted.shape == (224 + launcher.PROMPT_BAR_HEIGHT, 672, 3)
+    assert prompted.shape == image.shape
     assert prompted.dtype == np.uint8
-    assert np.all(prompted[:224] == 17)
-    assert np.any(prompted[224:] != 0)
+    assert np.all(prompted[:170] == 17)
+    assert np.min(prompted[170:]) < 17
+    assert np.max(prompted[170:]) > 200
+
+
+def test_long_task_prompt_wraps_inside_the_original_frame() -> None:
+    image = np.full((224, 224, 3), 17, dtype=np.uint8)
+    short = launcher._with_task_prompt(image, "Pick up the mug.")
+    long = launcher._with_task_prompt(
+        image,
+        "Pick up the chicken leg without touching either distractor object.",
+    )
+
+    short_changed_rows = np.flatnonzero(np.any(short != image, axis=(1, 2)))
+    long_changed_rows = np.flatnonzero(np.any(long != image, axis=(1, 2)))
+    assert long.shape == image.shape
+    assert np.ptp(long_changed_rows) > np.ptp(short_changed_rows)
+    assert np.all(long[:120] == 17)
 
 
 def test_empty_task_prompt_fast_fails() -> None:

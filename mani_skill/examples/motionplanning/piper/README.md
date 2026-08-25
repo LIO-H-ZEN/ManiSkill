@@ -64,10 +64,11 @@ a labeled horizontal triptych in this order:
 base_camera | wrist_camera | side_camera
 ```
 
-Each camera panel is 224 x 224. A dedicated bottom bar shows the task prompt,
-so the final frame is 672 x 256 at 20 FPS. The final JSON summary printed by
-the launcher contains the exact paths in `video_files` and the effective
-`task_prompt`.
+Each camera panel is 224 x 224, so the final frame remains 672 x 224 at 20 FPS.
+Small translucent badges identify the cameras, while the task prompt floats
+over the bottom of the frame without adding a separate bar. Long prompts wrap
+inside the frame. The final JSON summary printed by the launcher contains the
+exact paths in `video_files` and the effective `task_prompt`.
 
 The built-in prompt is `Pick up the red cube.` for LiftCube. LiftAnything
 derives an object-specific prompt from the sampled target, for example
