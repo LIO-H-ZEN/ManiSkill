@@ -16,6 +16,15 @@ three 224 x 224 RGB cameras:
 base_camera | wrist_camera | side_camera
 ```
 
+## LiftAnything example
+
+This expert episode lifts an InternData chicken-leg target among two InternData
+distractors. Lighting, table texture, and clutter placement are randomized
+during the episode, and the synchronized triptych keeps the object-specific
+task prompt visible.
+
+![PIPER LiftAnything with InternData objects](./assets/lift_anything_interndata.gif)
+
 ## Quick start
 
 The launcher creates and manages a Python 3.11 environment with
