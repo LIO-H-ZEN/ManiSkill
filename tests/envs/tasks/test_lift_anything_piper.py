@@ -17,6 +17,7 @@ from mani_skill.envs.tasks.pick_anything.episode_specs import (
 from mani_skill.envs.tasks.pick_anything.lift_anything_piper import (
     MAX_PLANAR_REACH,
     LiftAnythingPiperEnv,
+    should_restore_settled_state,
     validate_settled_spawn,
 )
 from mani_skill.envs.tasks.pick_anything.pick_anything_env import PickAnythingEnv
@@ -95,6 +96,21 @@ def test_settled_state_replay_mismatch_fast_fails() -> None:
 
     with pytest.raises(RuntimeError, match="settled position"):
         LiftAnythingPiperEnv._assert_settled_object_state(expected, actual)
+
+
+def test_settled_state_is_only_restored_for_the_frozen_episode_seed() -> None:
+    spec = dataclasses.replace(
+        _episode_spec(),
+        settled_object_state=SettledObjectState(
+            position=(0.01, 0.02, 0.03),
+            quaternion=(1.0, 0.0, 0.0, 0.0),
+            linear_velocity=(0.0, 0.0, 0.0),
+            angular_velocity=(0.0, 0.0, 0.0),
+        ),
+    )
+
+    assert not should_restore_settled_state(spec, 2022)
+    assert should_restore_settled_state(spec, spec.environment_seed)
 
 
 def test_benchmark_manifest_requires_settled_state(tmp_path) -> None:

@@ -66,6 +66,16 @@ def validate_settled_spawn(
         )
 
 
+def should_restore_settled_state(
+    episode_spec: EpisodeSpec | None, episode_seed: int
+) -> bool:
+    return (
+        episode_spec is not None
+        and episode_spec.settled_object_state is not None
+        and int(episode_seed) == episode_spec.environment_seed
+    )
+
+
 @register_env("LiftAnythingPiper-v1", max_episode_steps=100)
 class LiftAnythingPiperEnv(PickAnythingEnv):
     """Grasp one arbitrary object and lift it 10 cm for three control steps."""
@@ -265,13 +275,14 @@ class LiftAnythingPiperEnv(PickAnythingEnv):
                     settled_bottom_z=settled_bottom_z,
                     robot_base_position=np.asarray(self.agent.robot.pose.p[0].cpu()),
                 )
-            if self.episode_spec is not None:
+            if should_restore_settled_state(
+                self.episode_spec, int(self._episode_seed[0])
+            ):
                 expected = self.episode_spec.settled_object_state
-                if expected is not None:
-                    self._assert_settled_object_state(expected, settled_state)
-                    self._restore_settled_object_state(expected)
-                    settled_state = self._read_settled_object_state()
-                    self._assert_settled_object_state(expected, settled_state)
+                self._assert_settled_object_state(expected, settled_state)
+                self._restore_settled_object_state(expected)
+                settled_state = self._read_settled_object_state()
+                self._assert_settled_object_state(expected, settled_state)
             self._settled_object_state = settled_state
         self.object_rest_z[env_idx] = self.obj.pose.p[env_idx, 2]
         self.success_streak[env_idx] = 0
