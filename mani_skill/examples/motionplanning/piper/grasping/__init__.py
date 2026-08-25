@@ -8,6 +8,8 @@ from .contracts import (
     GraspProviderName,
     PipelineName,
 )
+from .antipodal import AntipodalConfig, AntipodalGraspProvider
+from .geometry import ResolvedObjectGeometry, resolve_object_geometry
 
 __all__ = [
     "BenchmarkGroup",
@@ -16,4 +18,8 @@ __all__ = [
     "GraspCandidate",
     "GraspProviderName",
     "PipelineName",
+    "AntipodalConfig",
+    "AntipodalGraspProvider",
+    "ResolvedObjectGeometry",
+    "resolve_object_geometry",
 ]
