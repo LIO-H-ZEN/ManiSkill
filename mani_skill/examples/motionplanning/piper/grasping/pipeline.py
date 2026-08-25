@@ -22,12 +22,13 @@ MAX_DESCEND_TRANSLATION_STEP = 0.002
 LIFT_DISTANCE = 0.12
 LEGACY_HOLD_STEPS = 3
 ROBUST_HOLD_STEPS = 10
-COMMON_PIPELINE_VERSION = "piper_common_grasp_pipeline_v1"
+COMMON_PIPELINE_VERSION = "piper_common_grasp_pipeline_v2_target_geometry"
 
 
 @dataclasses.dataclass(frozen=True)
 class RankedCandidate:
     candidate: GraspCandidate
+    proposal_rank: int
     clearance_score: float
     ik_cost: float
     path_length: float
@@ -35,6 +36,8 @@ class RankedCandidate:
     gravity_torque_risk: float
 
     def __post_init__(self) -> None:
+        if self.proposal_rank <= 0:
+            raise ValueError("proposal_rank must be positive")
         metrics = {
             "clearance_score": self.clearance_score,
             "ik_cost": self.ik_cost,

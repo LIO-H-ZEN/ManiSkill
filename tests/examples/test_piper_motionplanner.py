@@ -21,6 +21,7 @@ from mani_skill.examples.motionplanning.piper.solutions.lift_anything import (
     MAX_GRASP_CANDIDATES,
     generate_grasp_candidates,
 )
+from mani_skill.examples.motionplanning.piper.solutions import lift_anything
 from scripts.collect_lift_cube_piper import StrictEpisodeRecorder
 from scripts.collect_lift_anything_piper import projected_bbox_size
 
@@ -288,7 +289,7 @@ def test_liftanything_candidates_are_bounded_and_width_feasible() -> None:
 
     assert obj.requested_world_frame is False
     assert len(candidates) == MAX_GRASP_CANDIDATES
-    assert all(candidate.required_width <= 0.07 for candidate in candidates)
+    assert all(0.001 <= candidate.required_width <= 0.068 for candidate in candidates)
     assert len({candidate.candidate_id for candidate in candidates}) == len(candidates)
 
 
@@ -298,6 +299,43 @@ def test_liftanything_candidates_reject_width_infeasible_object() -> None:
             _AnythingAgent(),
             _Object([0.08, 0.09, 0.04]),
             np.array([-0.35, 0.0, 0.0]),
+        )
+
+
+def test_liftanything_candidates_skip_submillimetre_axis() -> None:
+    candidates = generate_grasp_candidates(
+        _AnythingAgent(),
+        _Object([0.0005, 0.02, 0.04]),
+        np.array([-0.35, 0.0, 0.0]),
+    )
+
+    assert len(candidates) == 9
+    assert all(candidate.required_width == 0.02 for candidate in candidates)
+
+
+def test_liftanything_candidates_reject_width_above_contract_limit() -> None:
+    with pytest.raises(RuntimeError, match="width-infeasible"):
+        generate_grasp_candidates(
+            _AnythingAgent(),
+            _Object([0.069, 0.07, 0.04]),
+            np.array([-0.35, 0.0, 0.0]),
+        )
+
+
+def test_antipodal_cache_miss_does_not_generate_online(tmp_path, monkeypatch) -> None:
+    object_spec = SimpleNamespace(stable_id="interndata/example")
+    geometry = SimpleNamespace(
+        object_spec=object_spec,
+        canonical_geometry_hash="a" * 64,
+    )
+    monkeypatch.setattr(lift_anything, "resolve_object_geometry", lambda spec: geometry)
+    monkeypatch.setattr(lift_anything, "piper_gripper_geometry_hash", lambda: "gripper")
+
+    with pytest.raises(FileNotFoundError, match="Incomplete grasp cache entry"):
+        lift_anything._antipodal_candidates(
+            SimpleNamespace(fixed_object_spec=object_spec),
+            seed=1,
+            cache_dir=tmp_path,
         )
 
 

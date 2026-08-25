@@ -30,6 +30,8 @@ from mani_skill.examples.motionplanning.piper.grasping.contracts import (
     FailureStage,
     GraspCandidate as LocalGraspCandidate,
     GraspProviderName,
+    MAX_EXECUTABLE_GRIPPER_WIDTH,
+    MIN_EXECUTABLE_GRIPPER_WIDTH,
     PipelineName,
 )
 from mani_skill.examples.motionplanning.piper.grasping.geometry import (
@@ -60,7 +62,8 @@ from mani_skill.examples.motionplanning.piper.solutions.lift_cube import (
 )
 
 MAX_GRASP_CANDIDATES = 16
-MAX_GRIPPER_WIDTH = 0.07
+MIN_GRIPPER_WIDTH = MIN_EXECUTABLE_GRIPPER_WIDTH
+MAX_GRIPPER_WIDTH = MAX_EXECUTABLE_GRIPPER_WIDTH
 
 
 @dataclasses.dataclass(frozen=True)
@@ -139,7 +142,7 @@ def generate_grasp_candidates(
         ((float(extents[index]), index) for index in range(2)), key=lambda item: item[0]
     )
     for required_width, axis_index in feasible_axes:
-        if required_width > MAX_GRIPPER_WIDTH:
+        if not MIN_GRIPPER_WIDTH <= required_width <= MAX_GRIPPER_WIDTH:
             continue
         base_axis = axes[axis_index]
         for z_fraction in z_offsets:
@@ -169,8 +172,9 @@ def generate_grasp_candidates(
                     return candidates
     if not candidates:
         raise RuntimeError(
-            f"width-infeasible: horizontal OBB widths {extents[:2].tolist()} exceed "
-            f"{MAX_GRIPPER_WIDTH} m"
+            "width-infeasible: horizontal OBB widths "
+            f"{extents[:2].tolist()} lie outside "
+            f"[{MIN_GRIPPER_WIDTH}, {MAX_GRIPPER_WIDTH}] m"
         )
     return candidates
 
@@ -245,14 +249,10 @@ def _antipodal_candidates(
     )
     cache = GraspCache(cache_dir) if cache_dir is not None else None
     if cache is not None:
-        try:
-            candidates, manifest = cache.load(key)
-        except FileNotFoundError:
-            pass
-        else:
-            if manifest["failure"] is not None:
-                raise RuntimeError(manifest["failure"])
-            return candidates
+        candidates, manifest = cache.load(key)
+        if manifest["failure"] is not None:
+            raise RuntimeError(manifest["failure"])
+        return candidates
     generation_seed = int(key[:16], 16)
     candidates = AntipodalGraspProvider(config).generate(geometry, seed=generation_seed)
     if cache is not None:
@@ -338,6 +338,21 @@ def _path_length(result) -> float:
     return float(np.linalg.norm(np.diff(positions, axis=0), axis=1).sum())
 
 
+def _expected_execution_failure_stage(reason: str) -> FailureStage | None:
+    exact = {
+        "pregrasp": FailureStage.PREGRASP_PATH,
+        "descend": FailureStage.DESCEND_PATH,
+        "descend-table-collision": FailureStage.TABLE_CLEARANCE,
+        "grasp": FailureStage.CLOSE,
+        "lift": FailureStage.LIFT,
+    }
+    if reason in exact:
+        return exact[reason]
+    if reason.startswith("target-"):
+        return FailureStage.GRIPPER_COLLISION
+    return None
+
+
 def _evaluate_common_candidates(
     env,
     candidates: list[LocalGraspCandidate],
@@ -350,13 +365,20 @@ def _evaluate_common_candidates(
     gripper_geometry = PiperGripperGeometry.from_package_assets()
     preliminary = []
     evaluations = []
+    env.reset(seed=seed, options={"reconfigure": True})
+    target_geometry_validator = TargetGeometryCollisionValidator(
+        base_env, gripper_geometry
+    )
+    proposal_ranks = {
+        candidate.candidate_id: proposal_rank
+        for proposal_rank, candidate in enumerate(candidates, start=1)
+    }
+    if len(proposal_ranks) != len(candidates):
+        raise ValueError("candidate IDs must be unique within a proposal set")
     for candidate in candidates:
-        env.reset(seed=seed, options={"reconfigure": True})
+        proposal_rank = proposal_ranks[candidate.candidate_id]
         grasp_pose = world_grasp_pose(base_env.obj.pose, candidate)
         grasp_matrix = pose_matrix(grasp_pose)
-        target_geometry_validator = TargetGeometryCollisionValidator(
-            base_env, gripper_geometry
-        )
         try:
             target_geometry_validator.validate_descend_and_closure(
                 pregrasp_pose(grasp_pose),
@@ -369,7 +391,7 @@ def _evaluate_common_candidates(
                     candidate_id=candidate.candidate_id,
                     provider=candidate.source,
                     pipeline=PipelineName.COMMON,
-                    rank=len(evaluations) + 1,
+                    rank=proposal_rank,
                     failure_stage=FailureStage.GRIPPER_COLLISION,
                     failure_reason=str(error),
                     antipodal_score=candidate.proposal_score,
@@ -401,7 +423,7 @@ def _evaluate_common_candidates(
                     candidate_id=candidate.candidate_id,
                     provider=candidate.source,
                     pipeline=PipelineName.COMMON,
-                    rank=len(evaluations) + 1,
+                    rank=proposal_rank,
                     failure_stage=FailureStage.TABLE_CLEARANCE,
                     failure_reason=f"minimum clearance {clearance:.6f} m",
                     antipodal_score=candidate.proposal_score,
@@ -417,6 +439,7 @@ def _evaluate_common_candidates(
         preliminary.append(
             RankedCandidate(
                 candidate=candidate,
+                proposal_rank=proposal_rank,
                 clearance_score=clearance,
                 ik_cost=0.0,
                 path_length=0.0,
@@ -426,7 +449,7 @@ def _evaluate_common_candidates(
         )
     ik_budget = rank_candidates(preliminary, maximum_candidates=64)
     feasible = []
-    for preliminary_rank, item in enumerate(ik_budget, start=1):
+    for item in ik_budget:
         env.reset(seed=seed, options={"reconfigure": True})
         grasp_pose = world_grasp_pose(base_env.obj.pose, item.candidate)
         target = pregrasp_pose(grasp_pose)
@@ -454,7 +477,7 @@ def _evaluate_common_candidates(
                         candidate_id=item.candidate.candidate_id,
                         provider=item.candidate.source,
                         pipeline=PipelineName.COMMON,
-                        rank=preliminary_rank,
+                        rank=item.proposal_rank,
                         failure_stage=FailureStage.IK,
                         failure_reason=status,
                         antipodal_score=item.candidate.proposal_score,
@@ -476,7 +499,7 @@ def _evaluate_common_candidates(
                         candidate_id=item.candidate.candidate_id,
                         provider=item.candidate.source,
                         pipeline=PipelineName.COMMON,
-                        rank=preliminary_rank,
+                        rank=item.proposal_rank,
                         failure_stage=FailureStage.PREGRASP_PATH,
                         failure_reason="MPlib failed to plan a pregrasp path",
                         antipodal_score=item.candidate.proposal_score,
@@ -492,11 +515,31 @@ def _evaluate_common_candidates(
             feasible.append(
                 RankedCandidate(
                     candidate=item.candidate,
+                    proposal_rank=item.proposal_rank,
                     clearance_score=item.clearance_score,
                     ik_cost=ik_cost,
                     path_length=_path_length(path),
                     com_distance=item.com_distance,
                     gravity_torque_risk=item.gravity_torque_risk,
+                )
+            )
+            evaluations.append(
+                CandidateEvaluation(
+                    candidate_id=item.candidate.candidate_id,
+                    provider=item.candidate.source,
+                    pipeline=PipelineName.COMMON,
+                    rank=item.proposal_rank,
+                    failure_stage=None,
+                    failure_reason=None,
+                    antipodal_score=item.candidate.proposal_score,
+                    clearance_score=item.clearance_score,
+                    ik_cost=ik_cost,
+                    path_length=_path_length(path),
+                    com_distance=item.com_distance,
+                    gravity_torque_risk=item.gravity_torque_risk,
+                    geometry_feasible=True,
+                    ik_feasible=True,
+                    path_feasible=True,
                 )
             )
         finally:
@@ -651,21 +694,15 @@ def solve(
                 )
             except RuntimeError as error:
                 last_reason = str(error)
-                stage_name = last_reason.split(":", 1)[0]
-                stage = {
-                    "pregrasp": FailureStage.PREGRASP_PATH,
-                    "descend": FailureStage.DESCEND_PATH,
-                    "target-penetration": FailureStage.GRIPPER_COLLISION,
-                    "target-pad-contact-early": FailureStage.GRIPPER_COLLISION,
-                    "grasp": FailureStage.CLOSE,
-                    "lift": FailureStage.LIFT,
-                }.get(stage_name, FailureStage.GRIPPER_COLLISION)
+                stage = _expected_execution_failure_stage(last_reason)
+                if stage is None:
+                    raise
                 evaluations.append(
                     CandidateEvaluation(
                         candidate_id=item.candidate.candidate_id,
                         provider=provider,
                         pipeline=pipeline,
-                        rank=execution_rank,
+                        rank=item.proposal_rank,
                         failure_stage=stage,
                         failure_reason=last_reason,
                         antipodal_score=item.candidate.proposal_score,
@@ -678,6 +715,7 @@ def solve(
                         ik_feasible=True,
                         path_feasible=True,
                         executed=True,
+                        execution_rank=execution_rank,
                     )
                 )
                 continue
@@ -693,7 +731,7 @@ def solve(
                     candidate_id=item.candidate.candidate_id,
                     provider=provider,
                     pipeline=pipeline,
-                    rank=execution_rank,
+                    rank=item.proposal_rank,
                     failure_stage=None if robust else FailureStage.ROBUST_HOLD,
                     failure_reason=None if robust else "robust hold was not reached",
                     antipodal_score=item.candidate.proposal_score,
@@ -711,6 +749,7 @@ def solve(
                     ik_feasible=True,
                     path_feasible=True,
                     executed=True,
+                    execution_rank=execution_rank,
                 )
             )
             if robust:

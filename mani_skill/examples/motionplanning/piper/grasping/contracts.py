@@ -9,6 +9,8 @@ from typing import Any, Mapping
 import numpy as np
 
 FRAME_CONVENTION_VERSION = "piper_object_tcp_v1"
+MIN_EXECUTABLE_GRIPPER_WIDTH = 0.001
+MAX_EXECUTABLE_GRIPPER_WIDTH = 0.068
 
 
 class GraspProviderName(str, Enum):
@@ -89,8 +91,16 @@ class GraspCandidate:
         if np.linalg.det(rotation) < 0.99999:
             raise ValueError("object_T_tcp rotation must be right-handed")
         object.__setattr__(self, "object_T_tcp", transform)
-        if not 0.001 <= float(self.required_width) <= 0.068:
-            raise ValueError("required_width must be in [0.001, 0.068] m")
+        if not (
+            MIN_EXECUTABLE_GRIPPER_WIDTH
+            <= float(self.required_width)
+            <= MAX_EXECUTABLE_GRIPPER_WIDTH
+        ):
+            raise ValueError(
+                "required_width must be in "
+                f"[{MIN_EXECUTABLE_GRIPPER_WIDTH}, "
+                f"{MAX_EXECUTABLE_GRIPPER_WIDTH}] m"
+            )
         if not np.isfinite(self.proposal_score):
             raise ValueError("proposal_score must be finite")
         contacts = _finite_array(self.contact_points, (2, 3), "contact_points")
@@ -100,6 +110,8 @@ class GraspCandidate:
 
 @dataclasses.dataclass(frozen=True)
 class CandidateEvaluation:
+    """One pipeline observation keyed by the provider's original proposal rank."""
+
     candidate_id: str
     provider: GraspProviderName
     pipeline: PipelineName
@@ -119,10 +131,13 @@ class CandidateEvaluation:
     ik_feasible: bool = False
     path_feasible: bool = False
     executed: bool = False
+    execution_rank: int | None = None
 
     def __post_init__(self) -> None:
         if self.rank <= 0:
             raise ValueError("rank must be positive")
+        if self.execution_rank is not None and self.execution_rank <= 0:
+            raise ValueError("execution_rank must be positive")
         object.__setattr__(self, "provider", GraspProviderName(self.provider))
         object.__setattr__(self, "pipeline", PipelineName(self.pipeline))
         if self.failure_stage is not None:
@@ -139,6 +154,10 @@ class CandidateEvaluation:
             raise ValueError("path feasibility requires IK feasibility")
         if self.executed and not self.path_feasible:
             raise ValueError("candidate execution requires path feasibility")
+        if self.executed != (self.execution_rank is not None):
+            raise ValueError(
+                "execution_rank must be set exactly when the candidate is executed"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         payload = dataclasses.asdict(self)

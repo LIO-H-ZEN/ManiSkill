@@ -114,6 +114,7 @@ def test_rank_candidates_uses_buckets_and_contact_diversity() -> None:
     candidates = [
         RankedCandidate(
             candidate=_candidate(f"c{index}", score=0.91, region=(index // 5, 0, 0)),
+            proposal_rank=index + 1,
             clearance_score=0.02,
             ik_cost=float(index),
             path_length=0.0,
@@ -136,16 +137,19 @@ def test_rank_candidates_uses_com_and_gravity_cost_after_quality_buckets() -> No
     candidates = [
         RankedCandidate(
             candidate=_candidate(candidate_id, score=0.91),
+            proposal_rank=index + 1,
             clearance_score=0.02,
             ik_cost=0.5,
             path_length=0.1,
             com_distance=com_distance,
             gravity_torque_risk=gravity_torque_risk,
         )
-        for candidate_id, com_distance, gravity_torque_risk in (
-            ("high-com", 0.08, 0.01),
-            ("high-torque", 0.01, 0.08),
-            ("balanced", 0.01, 0.01),
+        for index, (candidate_id, com_distance, gravity_torque_risk) in enumerate(
+            (
+                ("high-com", 0.08, 0.01),
+                ("high-torque", 0.01, 0.08),
+                ("balanced", 0.01, 0.01),
+            )
         )
     ]
 

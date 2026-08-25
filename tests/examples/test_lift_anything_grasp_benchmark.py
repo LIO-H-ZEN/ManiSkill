@@ -17,8 +17,9 @@ from scripts.freeze_lift_anything_benchmark import (
     freeze_manifest,
     freeze_quick_manifest,
 )
-from scripts.collect_lift_anything_piper import AttemptResult, MetricsEpisodeRecorder
+from scripts import collect_lift_anything_piper as collector
 from scripts import run_lift_anything_grasp_benchmark as benchmark_runner
+from scripts.collect_lift_anything_piper import AttemptResult, MetricsEpisodeRecorder
 
 
 def _episode(object_id: str, episode_index: int) -> EpisodeSpec:
@@ -160,6 +161,37 @@ def test_quick_benchmark_reports_delta_without_promotion_decision() -> None:
     assert comparison["promotion_passed"] is None
 
 
+def test_stage_recall_uses_original_proposal_rank() -> None:
+    row = {
+        "stable_episode_id": "object-0",
+        "accepted": False,
+        "attempted_candidates": 1,
+        "elapsed_seconds": 1.0,
+        "reason": "lift",
+        "candidate_evaluations": (
+            {
+                "rank": 50,
+                "execution_rank": 1,
+                "geometry_feasible": True,
+                "ik_feasible": True,
+                "path_feasible": True,
+                "failure_stage": "lift",
+            },
+        ),
+    }
+
+    report = analyze_benchmark(
+        {"A": [row]},
+        {"object-0": "object"},
+        {"object": "unstratified"},
+        bootstrap_samples=10,
+        evaluate_promotion=False,
+    )
+
+    assert report["groups"]["A"]["path_feasible_recall_at_k"]["1"] == 0.0
+    assert report["groups"]["A"]["path_feasible_recall_at_k"]["16"] == 0.0
+
+
 def test_formal_manifest_can_exclude_pilot_objects() -> None:
     categories = {
         f"cube/{category}-{index}": category
@@ -223,6 +255,23 @@ def test_metrics_episode_recorder_tracks_steps_without_rgb_frames() -> None:
     assert recorder.step_count == 1
     assert np.isclose(recorder.max_lift_height, 0.12)
     assert not hasattr(recorder, "frames")
+
+
+def test_collect_attempt_propagates_programming_errors(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(collector.gym, "make", lambda *args, **kwargs: _MetricsEnv())
+
+    def fail_fast(*args, **kwargs):
+        raise ValueError("planner invariant failed")
+
+    monkeypatch.setattr(collector, "solve", fail_fast)
+
+    with pytest.raises(ValueError, match="planner invariant failed"):
+        collector.collect_attempt(
+            spec_dict=_episode("simple", 0).to_dict(),
+            output_dir=str(tmp_path),
+            render_backend="cpu",
+            record_trajectory=False,
+        )
 
 
 def test_benchmark_episode_result_is_written_as_resumable_shard(

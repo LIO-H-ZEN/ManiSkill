@@ -73,3 +73,22 @@ def test_candidate_evaluation_rejects_inconsistent_feasibility_stages() -> None:
             geometry_feasible=True,
             path_feasible=True,
         )
+
+
+def test_candidate_evaluation_separates_proposal_and_execution_rank() -> None:
+    evaluation = CandidateEvaluation(
+        candidate_id="candidate-50",
+        provider=GraspProviderName.ANTIPODAL,
+        pipeline=PipelineName.COMMON,
+        rank=50,
+        execution_rank=1,
+        failure_stage=None,
+        failure_reason=None,
+        geometry_feasible=True,
+        ik_feasible=True,
+        path_feasible=True,
+        executed=True,
+    )
+
+    assert evaluation.rank == 50
+    assert evaluation.execution_rank == 1

@@ -364,22 +364,6 @@ def collect_attempt(
             pipeline_name.value,
             evaluations,
         )
-    except Exception as error:
-        return AttemptResult(
-            spec.stable_episode_id,
-            spec.object_spec.stable_id,
-            spec.object_spec.source,
-            False,
-            f"{type(error).__name__}: {error}",
-            0,
-            recorder.step_count,
-            recorder.max_lift_height,
-            None,
-            None,
-            provider_name.value,
-            pipeline_name.value,
-            (),
-        )
     finally:
         recorder.close()
 
