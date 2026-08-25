@@ -5,10 +5,10 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import pathlib
 from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
-
 
 ObjectSourceName = Literal["cube", "ycb", "interndata"]
 
@@ -18,6 +18,66 @@ def _finite_tuple(value: Sequence[float], length: int, name: str) -> tuple[float
     if len(result) != length or not np.all(np.isfinite(result)):
         raise ValueError(f"{name} must contain {length} finite values, got {value!r}")
     return result
+
+
+def _canonical_quaternion(value: Sequence[float], name: str) -> tuple[float, ...]:
+    quaternion = _finite_tuple(value, 4, name)
+    if not np.isclose(np.linalg.norm(quaternion), 1.0, atol=1e-5):
+        raise ValueError(f"{name} must be normalized")
+    for component in quaternion:
+        if not np.isclose(component, 0.0, atol=1e-12):
+            if component < 0.0:
+                quaternion = tuple(-item for item in quaternion)
+            break
+    return quaternion
+
+
+@dataclasses.dataclass(frozen=True)
+class SettledObjectState:
+    """Post-settle rigid-body state used for paired expert benchmarks."""
+
+    position: tuple[float, float, float]
+    quaternion: tuple[float, float, float, float]
+    linear_velocity: tuple[float, float, float]
+    angular_velocity: tuple[float, float, float]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "position", _finite_tuple(self.position, 3, "settled position")
+        )
+        object.__setattr__(
+            self,
+            "quaternion",
+            _canonical_quaternion(self.quaternion, "settled quaternion"),
+        )
+        object.__setattr__(
+            self,
+            "linear_velocity",
+            _finite_tuple(self.linear_velocity, 3, "settled linear velocity"),
+        )
+        object.__setattr__(
+            self,
+            "angular_velocity",
+            _finite_tuple(self.angular_velocity, 3, "settled angular velocity"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "SettledObjectState":
+        allowed = {field.name for field in dataclasses.fields(cls)}
+        unknown = set(value) - allowed
+        if unknown:
+            raise ValueError(f"Unknown settled object state fields: {sorted(unknown)}")
+        return cls(**{key: tuple(item) for key, item in value.items()})
+
+    @property
+    def fingerprint(self) -> str:
+        canonical = json.dumps(
+            self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,7 +106,9 @@ class ObjectSpec:
             object.__setattr__(self, "cube_color", color)
         else:
             if self.cube_half_size is not None or self.cube_color is not None:
-                raise ValueError(f"{self.source} ObjectSpec must not define cube fields")
+                raise ValueError(
+                    f"{self.source} ObjectSpec must not define cube fields"
+                )
             if self.source == "interndata" and not self.category:
                 raise ValueError("interndata ObjectSpec requires category")
             if self.source == "ycb" and self.category is not None:
@@ -88,6 +150,7 @@ class EpisodeSpec:
     directional_light_direction: tuple[float, float, float]
     directional_light_intensity: float
     robot_init_qpos: tuple[float, ...]
+    settled_object_state: SettledObjectState | None = None
 
     def __post_init__(self) -> None:
         if not self.stable_episode_id:
@@ -99,10 +162,11 @@ class EpisodeSpec:
             "object_position",
             _finite_tuple(self.object_position, 3, "object_position"),
         )
-        quaternion = _finite_tuple(self.object_quaternion, 4, "object_quaternion")
-        if not np.isclose(np.linalg.norm(quaternion), 1.0, atol=1e-5):
-            raise ValueError("object_quaternion must be normalized")
-        object.__setattr__(self, "object_quaternion", quaternion)
+        object.__setattr__(
+            self,
+            "object_quaternion",
+            _canonical_quaternion(self.object_quaternion, "object_quaternion"),
+        )
         if self.table_friction is not None:
             object.__setattr__(
                 self,
@@ -115,7 +179,10 @@ class EpisodeSpec:
         if np.linalg.norm(direction) == 0.0:
             raise ValueError("directional_light_direction must be non-zero")
         object.__setattr__(self, "directional_light_direction", direction)
-        if not np.isfinite(self.directional_light_intensity) or self.directional_light_intensity <= 0:
+        if (
+            not np.isfinite(self.directional_light_intensity)
+            or self.directional_light_intensity <= 0
+        ):
             raise ValueError("directional_light_intensity must be positive")
         qpos = _finite_tuple(self.robot_init_qpos, 8, "robot_init_qpos")
         object.__setattr__(self, "robot_init_qpos", qpos)
@@ -123,6 +190,8 @@ class EpisodeSpec:
     def to_dict(self) -> dict[str, Any]:
         payload = dataclasses.asdict(self)
         payload["object_spec"] = self.object_spec.to_dict()
+        if self.settled_object_state is not None:
+            payload["settled_object_state"] = self.settled_object_state.to_dict()
         return payload
 
     @classmethod
@@ -133,6 +202,10 @@ class EpisodeSpec:
             raise ValueError(f"Unknown EpisodeSpec fields: {sorted(unknown)}")
         payload = dict(value)
         payload["object_spec"] = ObjectSpec.from_dict(payload["object_spec"])
+        if payload.get("settled_object_state") is not None:
+            payload["settled_object_state"] = SettledObjectState.from_dict(
+                payload["settled_object_state"]
+            )
         for key in (
             "object_position",
             "object_quaternion",
@@ -150,3 +223,26 @@ class EpisodeSpec:
             self.to_dict(), sort_keys=True, separators=(",", ":"), allow_nan=False
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def load_episode_specs_manifest(
+    path: pathlib.Path, *, require_settled_state: bool = False
+) -> list[EpisodeSpec]:
+    payload = json.loads(path.read_text())
+    rows = payload["episodes"] if isinstance(payload, dict) else payload
+    specs = [EpisodeSpec.from_dict(row) for row in rows]
+    ids = [spec.stable_episode_id for spec in specs]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Episode manifest contains duplicate stable_episode_id values")
+    if require_settled_state:
+        missing = [
+            spec.stable_episode_id
+            for spec in specs
+            if spec.settled_object_state is None
+        ]
+        if missing:
+            raise ValueError(
+                "Benchmark manifests require post-settle rigid-body state; "
+                f"missing for {missing}"
+            )
+    return specs

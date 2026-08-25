@@ -21,7 +21,7 @@ from mani_skill.utils import sapien_utils
 from mani_skill.utils.registration import register_env
 from mani_skill.utils.structs.pose import Pose
 
-from .episode_specs import EpisodeSpec, ObjectSpec
+from .episode_specs import EpisodeSpec, ObjectSpec, SettledObjectState
 from .pick_anything_env import PickAnythingEnv
 from .randomization import ClutterRandomizer, ObjectSource, Randomizer
 from .randomization.object_randomizer import CompositeObjectRandomizer
@@ -31,6 +31,7 @@ SETTLING_PHYSICS_STEPS = 50
 MAX_SETTLING_XY_DISPLACEMENT = 0.15
 MAX_TABLE_PENETRATION = 0.003
 MAX_PLANAR_REACH = 0.42
+SETTLED_STATE_ATOL = 1e-5
 
 
 def validate_settled_spawn(
@@ -246,7 +247,8 @@ class LiftAnythingPiperEnv(PickAnythingEnv):
             self._initial_object_quaternion = initial_quaternion
             for _ in range(SETTLING_PHYSICS_STEPS):
                 self.scene.step()
-            settled_position = self.obj.pose.p[0].detach().cpu().numpy().copy()
+            settled_state = self._read_settled_object_state()
+            settled_position = np.asarray(settled_state.position)
             mesh = self.obj.get_first_collision_mesh(to_world_frame=True)
             if mesh is None:
                 raise RuntimeError("spawn-invalid: object has no collision mesh")
@@ -259,6 +261,14 @@ class LiftAnythingPiperEnv(PickAnythingEnv):
                     settled_bottom_z=settled_bottom_z,
                     robot_base_position=np.asarray(self.agent.robot.pose.p[0].cpu()),
                 )
+            if self.episode_spec is not None:
+                expected = self.episode_spec.settled_object_state
+                if expected is not None:
+                    self._assert_settled_object_state(expected, settled_state)
+                    self._restore_settled_object_state(expected)
+                    settled_state = self._read_settled_object_state()
+                    self._assert_settled_object_state(expected, settled_state)
+            self._settled_object_state = settled_state
         self.object_rest_z[env_idx] = self.obj.pose.p[env_idx, 2]
         self.success_streak[env_idx] = 0
         self.streak_updated_at[env_idx] = 0
@@ -332,6 +342,51 @@ class LiftAnythingPiperEnv(PickAnythingEnv):
                     f"EpisodeSpec replay mismatch for {key}: expected {expected}, got {actual}"
                 )
 
+    def _read_settled_object_state(self) -> SettledObjectState:
+        state = self.obj.get_state()[0].detach().cpu().numpy()
+        return SettledObjectState(
+            position=tuple(state[:3]),
+            quaternion=tuple(state[3:7]),
+            linear_velocity=tuple(state[7:10]),
+            angular_velocity=tuple(state[10:13]),
+        )
+
+    @staticmethod
+    def _assert_settled_object_state(
+        expected: SettledObjectState, actual: SettledObjectState
+    ) -> None:
+        for field in (
+            "position",
+            "quaternion",
+            "linear_velocity",
+            "angular_velocity",
+        ):
+            if not np.allclose(
+                getattr(actual, field),
+                getattr(expected, field),
+                atol=SETTLED_STATE_ATOL,
+                rtol=0.0,
+            ):
+                raise RuntimeError(
+                    f"EpisodeSpec replay mismatch for settled {field}: "
+                    f"expected {getattr(expected, field)}, got {getattr(actual, field)}"
+                )
+
+    def _restore_settled_object_state(self, state: SettledObjectState) -> None:
+        vector = np.asarray(
+            [
+                *state.position,
+                *state.quaternion,
+                *state.linear_velocity,
+                *state.angular_velocity,
+            ],
+            dtype=np.float32,
+        )
+        self.obj.set_state(vector[None, :])
+        if self.gpu_sim_enabled:
+            self.scene._gpu_apply_all()
+            self.scene._gpu_fetch_all()
+
     def capture_episode_spec(self, stable_episode_id: str) -> EpisodeSpec:
         if self.num_envs != 1:
             raise RuntimeError("capture_episode_spec requires num_envs=1")
@@ -347,6 +402,7 @@ class LiftAnythingPiperEnv(PickAnythingEnv):
             object_position=tuple(self._initial_object_position.tolist()),
             object_quaternion=tuple(self._initial_object_quaternion.tolist()),
             robot_init_qpos=tuple(self._initial_robot_qpos.tolist()),
+            settled_object_state=self._settled_object_state,
             **metadata,
         )
 

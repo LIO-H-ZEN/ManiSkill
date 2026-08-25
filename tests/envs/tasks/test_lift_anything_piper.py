@@ -1,5 +1,6 @@
 import dataclasses
 import inspect
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,7 +8,12 @@ import pytest
 import torch
 
 import mani_skill.envs.tasks.pick_anything.pick_anything_env as pick_anything_module
-from mani_skill.envs.tasks.pick_anything.episode_specs import EpisodeSpec, ObjectSpec
+from mani_skill.envs.tasks.pick_anything.episode_specs import (
+    EpisodeSpec,
+    ObjectSpec,
+    SettledObjectState,
+    load_episode_specs_manifest,
+)
 from mani_skill.envs.tasks.pick_anything.lift_anything_piper import (
     MAX_PLANAR_REACH,
     LiftAnythingPiperEnv,
@@ -59,6 +65,50 @@ def test_episode_spec_round_trip_and_fingerprint() -> None:
     assert restored == spec
     assert restored.fingerprint == spec.fingerprint
     assert len(spec.fingerprint) == 64
+
+
+def test_episode_spec_round_trips_optional_settled_state() -> None:
+    state = SettledObjectState(
+        position=(0.01, 0.02, 0.03),
+        quaternion=(-1.0, 0.0, 0.0, 0.0),
+        linear_velocity=(0.001, 0.0, 0.0),
+        angular_velocity=(0.0, 0.002, 0.0),
+    )
+    spec = dataclasses.replace(_episode_spec(), settled_object_state=state)
+
+    restored = EpisodeSpec.from_dict(spec.to_dict())
+
+    assert restored == spec
+    assert restored.settled_object_state.quaternion == (1.0, -0.0, -0.0, -0.0)
+    assert len(restored.settled_object_state.fingerprint) == 64
+
+
+def test_settled_state_replay_mismatch_fast_fails() -> None:
+    expected = SettledObjectState(
+        position=(0.01, 0.02, 0.03),
+        quaternion=(1.0, 0.0, 0.0, 0.0),
+        linear_velocity=(0.0, 0.0, 0.0),
+        angular_velocity=(0.0, 0.0, 0.0),
+    )
+    actual = dataclasses.replace(expected, position=(0.011, 0.02, 0.03))
+
+    with pytest.raises(RuntimeError, match="settled position"):
+        LiftAnythingPiperEnv._assert_settled_object_state(expected, actual)
+
+
+def test_benchmark_manifest_requires_settled_state(tmp_path) -> None:
+    path = tmp_path / "episodes.json"
+    path.write_text(json.dumps({"episodes": [_episode_spec().to_dict()]}))
+
+    with pytest.raises(ValueError, match="post-settle rigid-body state"):
+        load_episode_specs_manifest(path, require_settled_state=True)
+
+
+def test_legacy_manifest_remains_readable_without_settled_state(tmp_path) -> None:
+    path = tmp_path / "episodes.json"
+    path.write_text(json.dumps({"episodes": [_episode_spec().to_dict()]}))
+
+    assert load_episode_specs_manifest(path) == [_episode_spec()]
 
 
 def test_object_spec_fast_fails_invalid_source_fields() -> None:
