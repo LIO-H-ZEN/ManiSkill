@@ -323,9 +323,7 @@ def collect_layout(
         robust_success = bool(
             _to_numpy(info.get("robust_success_10step", False)).reshape(-1)[0]
         )
-        max_lift_height = maximum_attempt_lift_height(
-            result, recorder.max_lift_height
-        )
+        max_lift_height = maximum_attempt_lift_height(result, recorder.max_lift_height)
         target_asset_key = env.unwrapped.layout_spec.target.asset_key
         prompt = env.unwrapped.instruction
         if not result.success or not robust_success:

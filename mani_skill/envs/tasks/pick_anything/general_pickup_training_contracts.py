@@ -158,9 +158,7 @@ def _sample_position(
     )
 
 
-def _validated_bounds(
-    name: str, bounds: Sequence[float]
-) -> tuple[float, float]:
+def _validated_bounds(name: str, bounds: Sequence[float]) -> tuple[float, float]:
     if len(bounds) != 2:
         raise ValueError(f"{name} must contain exactly two values")
     lower, upper = (float(value) for value in bounds)

@@ -60,9 +60,7 @@ def test_replay_video_uses_locked_three_camera_order():
         if isinstance(node, ast.FunctionDef) and node.name == "capture_frame"
     )
     calls = [
-        ast.unparse(node)
-        for node in ast.walk(capture)
-        if isinstance(node, ast.Call)
+        ast.unparse(node) for node in ast.walk(capture) if isinstance(node, ast.Call)
     ]
     assert "np.concatenate(panels, axis=1)" in calls
 

@@ -23,9 +23,7 @@ class PDJointPosController(BaseController):
         super().__init__(**kwargs)
         if self.config.interpolation_steps is not None:
             if not self.config.interpolate:
-                raise ValueError(
-                    "interpolation_steps requires interpolate=True"
-                )
+                raise ValueError("interpolation_steps requires interpolate=True")
             if not 1 <= self.config.interpolation_steps <= self._sim_steps:
                 raise ValueError(
                     "interpolation_steps must be in [1, sim steps per control]"
