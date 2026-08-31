@@ -10,9 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from mani_skill.envs.tasks.pick_anything.general_pickup_specs import (
-    RoboDojoLayoutSpec,
-)
+from mani_skill.envs.tasks.pick_anything.general_pickup_specs import RoboDojoLayoutSpec
 from mani_skill.examples.motionplanning.piper.grasping.cache import (
     GraspCache,
     cache_key,

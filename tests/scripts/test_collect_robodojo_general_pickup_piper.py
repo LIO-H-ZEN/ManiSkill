@@ -1,6 +1,6 @@
 import importlib.util
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -13,7 +13,6 @@ from mani_skill.examples.motionplanning.piper.grasping.contracts import (
 from mani_skill.examples.motionplanning.piper.solutions.lift_anything import (
     ExpertResult,
 )
-
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]

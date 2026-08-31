@@ -10,7 +10,6 @@ from typing import Any
 
 import numpy as np
 
-
 SCHEMA_VERSION = "general_pickup_direct_action_replay_comparison_v2"
 MANISKILL_PIPER_TCP_OFFSET_M = 0.1358
 
