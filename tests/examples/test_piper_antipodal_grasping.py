@@ -118,9 +118,10 @@ def test_robodojo_v4_geometry_preserves_disconnected_collision_hulls(
         "visual.glb_sha256": hashlib.sha256(visual_path.read_bytes()).hexdigest(),
         "collision.ply_sha256": hashlib.sha256(collision_path.read_bytes()).hexdigest(),
     }
-    canonical = lambda payload: (
-        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode()
+    def canonical(payload):
+        return (
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
     (asset_dir / "conversion.json").write_bytes(canonical(conversion))
     manifest = {"assets": [conversion]}
     manifest["manifest_sha256"] = hashlib.sha256(canonical(manifest)).hexdigest()

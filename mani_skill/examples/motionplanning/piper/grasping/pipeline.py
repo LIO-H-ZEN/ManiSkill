@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import itertools
 import math
 from collections.abc import Iterable
 from typing import Any
