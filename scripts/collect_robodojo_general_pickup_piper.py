@@ -16,6 +16,7 @@ import numpy as np
 import torch
 
 import mani_skill.envs  # noqa: F401
+from mani_skill.agents.robots.piper.piper_wristcam import PiperWristCam
 from mani_skill.examples.motionplanning.piper.grasping.contracts import (
     GraspProviderName,
 )
@@ -286,12 +287,16 @@ def collect_layout(
     candidate_pool_limit: int,
     seed: int,
     provider: str = GraspProviderName.ANTIPODAL.value,
+    disable_self_collisions: bool = False,
 ) -> AttemptResult:
     if provider not in PROVIDER_REQUEST_CHOICES:
         raise ValueError(f"unsupported provider request: {provider}")
+    if not isinstance(disable_self_collisions, bool):
+        raise ValueError("disable_self_collisions must be a boolean")
     episode_id = f"general-pickup-layout-{layout_id:03d}-seed-{seed:06d}"
     contract_path = contract_root / f"general_pickup_filtered_{layout_id:03d}.json"
     layout_spec = json.loads(contract_path.read_text(encoding="utf-8"))
+    PiperWristCam.disable_self_collisions = disable_self_collisions
     env = gym.make(
         "RoboDojoGeneralPickupPiper-v1",
         layout_id=layout_id,
@@ -364,6 +369,7 @@ def collect_layout(
                 else [provider]
             ),
             "pipeline": "common",
+            "disable_self_collisions": disable_self_collisions,
             "candidate_evaluations": evaluations,
         }
         shard_path, digest = _write_episode(
@@ -411,6 +417,7 @@ def main() -> None:
         choices=PROVIDER_REQUEST_CHOICES,
         default=GraspProviderName.ANTIPODAL.value,
     )
+    parser.add_argument("--disable-self-collisions", action="store_true")
     args = parser.parse_args()
     if args.candidate_pool_limit <= 0:
         raise ValueError("candidate-pool-limit must be positive")
@@ -431,6 +438,7 @@ def main() -> None:
             candidate_pool_limit=args.candidate_pool_limit,
             seed=args.seed,
             provider=args.provider,
+            disable_self_collisions=args.disable_self_collisions,
         )
         results.append(result)
         print(json.dumps(dataclasses.asdict(result), sort_keys=True), flush=True)
@@ -442,6 +450,7 @@ def main() -> None:
         "accepted": sum(result.accepted for result in results),
         "provider": args.provider,
         "pipeline": "common",
+        "disable_self_collisions": args.disable_self_collisions,
         "results": [dataclasses.asdict(result) for result in results],
     }
     manifest["manifest_sha256"] = hashlib.sha256(

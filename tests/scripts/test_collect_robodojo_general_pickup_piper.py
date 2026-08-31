@@ -199,3 +199,45 @@ def test_maximum_attempt_lift_height_rejects_invalid_values() -> None:
 
     with pytest.raises(ValueError, match="finite and non-negative"):
         collect.maximum_attempt_lift_height(result, np.nan)
+
+
+def test_collect_layout_validates_self_collision_contract(tmp_path) -> None:
+    with pytest.raises(ValueError, match="disable_self_collisions must be a boolean"):
+        collect.collect_layout(
+            layout_id=9,
+            contract_root=tmp_path,
+            asset_root=tmp_path,
+            grasp_cache_dir=tmp_path,
+            output_dir=tmp_path,
+            render_backend="cuda:0",
+            candidate_pool_limit=32,
+            seed=0,
+            disable_self_collisions="yes",
+        )
+
+
+def test_collect_layout_applies_self_collision_contract_before_env_creation(
+    monkeypatch, tmp_path
+) -> None:
+    contract_root = tmp_path / "contracts"
+    contract_root.mkdir()
+    (contract_root / "general_pickup_filtered_000.json").write_text("{}")
+
+    def reject_after_contract(*args, **kwargs):
+        assert collect.PiperWristCam.disable_self_collisions is True
+        raise RuntimeError("stop after self-collision contract")
+
+    monkeypatch.setattr(collect.gym, "make", reject_after_contract)
+
+    with pytest.raises(RuntimeError, match="stop after self-collision contract"):
+        collect.collect_layout(
+            layout_id=0,
+            contract_root=contract_root,
+            asset_root=tmp_path / "assets",
+            grasp_cache_dir=tmp_path / "cache",
+            output_dir=tmp_path / "output",
+            render_backend="cuda:0",
+            candidate_pool_limit=32,
+            seed=0,
+            disable_self_collisions=True,
+        )
