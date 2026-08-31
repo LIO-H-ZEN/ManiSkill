@@ -23,16 +23,56 @@ so a source never needs to know its own geometry to place itself flat.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import sapien
 import sapien.render
+import trimesh
 
 from mani_skill import ASSET_DIR
 from mani_skill.envs.tasks.pick_anything.episode_specs import ObjectSpec
 from mani_skill.utils.structs.actor import Actor
+
+ROBODOJO_ASSET_ROOT_ENV = "MANISKILL_ROBODOJO_ASSET_ROOT"
+ROBODOJO_COACD_CONVERTER_VERSION = "robodojo_usdz_to_maniskill_v4_material_graph_coacd"
+ROBODOJO_COACD_PARAMETERS = {
+    "threshold": 0.05,
+    "max_convex_hull": 32,
+    "seed": 0,
+}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _canonical_json_bytes(payload) -> bytes:
+    return (
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode()
+
+
+def resolve_robodojo_asset_root(root: str | Path | None = None) -> Path:
+    """Resolve the converted RoboDojo asset root without hidden fallbacks."""
+
+    value = root if root is not None else os.environ.get(ROBODOJO_ASSET_ROOT_ENV)
+    if value is None:
+        raise ValueError(
+            f"RoboDojo assets require an explicit root or {ROBODOJO_ASSET_ROOT_ENV}"
+        )
+    resolved = Path(value).expanduser().resolve()
+    if not resolved.is_dir():
+        raise FileNotFoundError(f"RoboDojo converted asset root is missing: {resolved}")
+    return resolved
 
 
 class ObjectSource:
@@ -49,9 +89,228 @@ class ObjectSource:
     name: str = "object"
 
     def build_actor(
-        self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None
+        self, env, env_idx: int, rng: np.random.RandomState, name: str | None = None
     ) -> Actor:  # pragma: no cover - interface
         raise NotImplementedError
+
+
+class RoboDojoConvertedObjectSource(ObjectSource):
+    """Build one versioned RoboDojo object from the offline conversion cache."""
+
+    name = "robodojo"
+    SUPPORTED_CONVERTER_VERSIONS = frozenset(
+        {
+            "robodojo_usdz_to_maniskill_v2",
+            "robodojo_usdz_to_maniskill_v3_material_graph",
+            ROBODOJO_COACD_CONVERTER_VERSION,
+        }
+    )
+
+    def __init__(
+        self,
+        *,
+        asset_type: str,
+        category: str,
+        object_id: str,
+        asset_root: str | Path | None = None,
+        scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
+        mass: float | None = None,
+        friction: float | None = None,
+    ):
+        if asset_type not in {"Rigid", "Clutter"}:
+            raise ValueError(f"Unsupported RoboDojo asset_type: {asset_type!r}")
+        if not category or not object_id:
+            raise ValueError("RoboDojo category and object_id must not be empty")
+        scale_array = np.asarray(scale, dtype=np.float64)
+        if scale_array.shape != (3,) or not np.all(np.isfinite(scale_array)):
+            raise ValueError(
+                f"RoboDojo scale must contain three finite values: {scale}"
+            )
+        if np.any(scale_array <= 0.0):
+            raise ValueError(f"RoboDojo scale must be positive: {scale}")
+        if mass is not None and (not np.isfinite(mass) or mass <= 0.0):
+            raise ValueError(f"RoboDojo mass must be positive: {mass}")
+        if friction is not None and (not np.isfinite(friction) or friction < 0.0):
+            raise ValueError(f"RoboDojo friction must be non-negative: {friction}")
+        self.asset_type = asset_type
+        self.category = category
+        self.object_id = object_id
+        self.asset_root = resolve_robodojo_asset_root(asset_root)
+        self.scale = tuple(float(value) for value in scale_array)
+        self.mass = None if mass is None else float(mass)
+        self.friction = None if friction is None else float(friction)
+        self.asset_key = f"{asset_type}/{category}/{object_id}"
+        self.asset_dir = self.asset_root / self.asset_key
+        self.visual_path = self.asset_dir / "visual.glb"
+        self.conversion_path = self.asset_dir / "conversion.json"
+        self._validate_conversion()
+
+    def _validate_conversion(self) -> None:
+        manifest_path = self.asset_root / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"RoboDojo conversion manifest is missing: {manifest_path}"
+            )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        stored_manifest_hash = manifest.pop("manifest_sha256", None)
+        actual_manifest_hash = hashlib.sha256(
+            _canonical_json_bytes(manifest)
+        ).hexdigest()
+        if stored_manifest_hash != actual_manifest_hash:
+            raise RuntimeError(
+                f"RoboDojo conversion manifest hash mismatch: {manifest_path}"
+            )
+        rows = {row["asset_key"]: row for row in manifest.get("assets", [])}
+        if self.asset_key not in rows:
+            raise KeyError(
+                f"RoboDojo asset is not declared in manifest: {self.asset_key}"
+            )
+        if not self.conversion_path.is_file():
+            raise FileNotFoundError(self.conversion_path)
+        conversion = json.loads(self.conversion_path.read_text(encoding="utf-8"))
+        if conversion != rows[self.asset_key]:
+            raise RuntimeError(
+                f"RoboDojo asset manifest row differs from conversion.json: {self.asset_key}"
+            )
+        converter_version = conversion.get("converter_version")
+        if converter_version not in self.SUPPORTED_CONVERTER_VERSIONS:
+            raise RuntimeError(
+                f"Unsupported RoboDojo converter version for {self.asset_key}: "
+                f"{converter_version!r}"
+            )
+        collision_filename = (
+            "collision.ply"
+            if converter_version == ROBODOJO_COACD_CONVERTER_VERSION
+            else "collision.obj"
+        )
+        self.collision_path = self.asset_dir / collision_filename
+        for filename in ("visual.glb", collision_filename):
+            path = self.asset_dir / filename
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            if _sha256_file(path) != conversion[f"{filename}_sha256"]:
+                raise RuntimeError(f"RoboDojo converted asset hash mismatch: {path}")
+        if converter_version == ROBODOJO_COACD_CONVERTER_VERSION:
+            self._validate_coacd_collision(conversion)
+        self.conversion = conversion
+
+    def _validate_coacd_collision(self, conversion: dict) -> None:
+        decomposition = conversion.get("collision_decomposition")
+        if not isinstance(decomposition, dict):
+            raise TypeError(
+                f"RoboDojo v4 asset has no collision decomposition metadata: {self.asset_key}"
+            )
+        if decomposition.get("algorithm") != "coacd":
+            raise RuntimeError(
+                f"RoboDojo v4 asset has unsupported collision decomposition: {self.asset_key}"
+            )
+        if decomposition.get("parameters") != ROBODOJO_COACD_PARAMETERS:
+            raise RuntimeError(
+                f"RoboDojo v4 asset has unexpected CoACD parameters: {self.asset_key}"
+            )
+        if not decomposition.get("package_version"):
+            raise RuntimeError(
+                f"RoboDojo v4 asset has no CoACD package version: {self.asset_key}"
+            )
+        collision = trimesh.load(self.collision_path, force="mesh", process=False)
+        if not isinstance(collision, trimesh.Trimesh):
+            raise TypeError(
+                f"RoboDojo v4 collision payload is not one mesh: {self.collision_path}"
+            )
+        components = tuple(collision.split(only_watertight=False))
+        expected_hulls = conversion.get("collision_hull_count")
+        if expected_hulls != len(components) or expected_hulls is None:
+            raise RuntimeError(
+                f"RoboDojo v4 collision hull count mismatch: {self.asset_key}"
+            )
+        if conversion.get("collision_vertices") != len(collision.vertices):
+            raise RuntimeError(
+                f"RoboDojo v4 collision vertex count mismatch: {self.asset_key}"
+            )
+        if conversion.get("collision_triangles") != len(collision.faces):
+            raise RuntimeError(
+                f"RoboDojo v4 collision triangle count mismatch: {self.asset_key}"
+            )
+        volumes = np.asarray([abs(float(mesh.volume)) for mesh in components])
+        if (
+            not components
+            or not np.all(np.isfinite(volumes))
+            or np.any(volumes <= 0.0)
+            or any(not mesh.is_watertight or not mesh.is_volume for mesh in components)
+        ):
+            raise RuntimeError(
+                f"RoboDojo v4 collision contains an invalid convex component: {self.asset_key}"
+            )
+        expected_volume = conversion.get("collision_volume")
+        if expected_volume is None or not np.isclose(
+            float(np.sum(volumes)), float(expected_volume), rtol=1e-5, atol=1e-12
+        ):
+            raise RuntimeError(
+                f"RoboDojo v4 collision volume mismatch: {self.asset_key}"
+            )
+
+    def load_collision_meshes(self) -> tuple[trimesh.Trimesh, ...]:
+        collision = trimesh.load(self.collision_path, force="mesh", process=False)
+        if not isinstance(collision, trimesh.Trimesh):
+            raise TypeError(f"Expected collision mesh: {self.collision_path}")
+        if self.conversion["converter_version"] == ROBODOJO_COACD_CONVERTER_VERSION:
+            meshes = tuple(collision.split(only_watertight=False))
+        else:
+            meshes = (collision,)
+        scale = np.asarray(self.scale, dtype=np.float64)
+        result = []
+        for mesh in meshes:
+            scaled = mesh.copy()
+            scaled.vertices = np.asarray(scaled.vertices, dtype=np.float64) * scale
+            result.append(scaled)
+        return tuple(result)
+
+    def _collision_density(self) -> float:
+        if self.mass is None:
+            return 1000.0
+        volume = sum(abs(float(mesh.volume)) for mesh in self.load_collision_meshes())
+        if not np.isfinite(volume) or volume <= 0.0:
+            raise ValueError(
+                f"RoboDojo collision mesh has invalid volume: {self.collision_path}"
+            )
+        return self.mass / volume
+
+    def build_actor(
+        self,
+        env,
+        env_idx: int,
+        rng: np.random.RandomState,
+        name: str | None = None,
+    ) -> Actor:
+        del rng
+        material = None
+        if self.friction is not None:
+            material = sapien.physx.PhysxMaterial(
+                static_friction=self.friction,
+                dynamic_friction=self.friction,
+                restitution=0.0,
+            )
+        builder = env.scene.create_actor_builder()
+        collision_kwargs = {
+            "filename": str(self.collision_path),
+            "scale": self.scale,
+            "material": material,
+            "density": self._collision_density(),
+        }
+        if self.conversion["converter_version"] == ROBODOJO_COACD_CONVERTER_VERSION:
+            builder.add_multiple_convex_collisions_from_file(
+                **collision_kwargs,
+                decomposition="none",
+            )
+        else:
+            builder.add_convex_collision_from_file(**collision_kwargs)
+        builder.add_visual_from_file(filename=str(self.visual_path), scale=self.scale)
+        builder.initial_pose = sapien.Pose()
+        builder.set_scene_idxs([env_idx])
+        return builder.build(
+            name=name
+            or f"robodojo-{self.asset_type.lower()}-{self.category}-{self.object_id}-{env_idx}"
+        )
 
 
 class FixedObjectSource(ObjectSource):
@@ -67,9 +326,8 @@ class FixedObjectSource(ObjectSource):
         env,
         env_idx: int,
         rng: np.random.RandomState,
-        name: Optional[str] = None,
+        name: str | None = None,
     ) -> Actor:
-        del rng
         spec = self.spec
         if spec.source == "cube":
             builder = env.scene.create_actor_builder()
@@ -77,9 +335,7 @@ class FixedObjectSource(ObjectSource):
             builder.add_box_collision(half_size=[half_size] * 3)
             builder.add_box_visual(
                 half_size=[half_size] * 3,
-                material=sapien.render.RenderMaterial(
-                    base_color=list(spec.cube_color)
-                ),
+                material=sapien.render.RenderMaterial(base_color=list(spec.cube_color)),
             )
         elif spec.source == "ycb":
             from mani_skill.utils.building import actors
@@ -88,7 +344,7 @@ class FixedObjectSource(ObjectSource):
             if spec.object_id not in source.model_ids:
                 raise ValueError(f"Unknown YCB object ID: {spec.object_id}")
             builder = actors.get_actor_builder(env.scene, id=f"ycb:{spec.object_id}")
-        else:
+        elif spec.source == "interndata":
             source = InternDataAssetsSource(categories=[str(spec.category)])
             instances = source._list_category_instances(str(spec.category))
             if spec.object_id not in instances:
@@ -102,6 +358,13 @@ class FixedObjectSource(ObjectSource):
                 filename=obj_path, scale=[scale] * 3
             )
             builder.add_visual_from_file(filename=obj_path, scale=[scale] * 3)
+        else:
+            source = RoboDojoConvertedObjectSource(
+                asset_type="Rigid",
+                category=str(spec.category),
+                object_id=spec.object_id,
+            )
+            return source.build_actor(env, env_idx, rng, name=name)
 
         builder.initial_pose = sapien.Pose()
         builder.set_scene_idxs([env_idx])
@@ -120,7 +383,9 @@ class CubeSource(ObjectSource):
         self.half_size_range = half_size_range
         self.color_range = color_range
 
-    def build_actor(self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None) -> Actor:
+    def build_actor(
+        self, env, env_idx: int, rng: np.random.RandomState, name: str | None = None
+    ) -> Actor:
         hs = float(rng.uniform(*self.half_size_range))
         col = rng.uniform(*self.color_range, size=(3,))
         builder = env.scene.create_actor_builder()
@@ -155,7 +420,7 @@ class YCBSource(ObjectSource):
 
     name = "ycb"
 
-    def __init__(self, model_ids: Optional[list[str]] = None):
+    def __init__(self, model_ids: list[str] | None = None):
         from mani_skill.utils.io_utils import load_json
 
         info_path = ASSET_DIR / "assets/mani_skill2_ycb/info_pick_v0.json"
@@ -165,12 +430,14 @@ class YCBSource(ObjectSource):
                 f"{info_path}. Download them first:\n"
                 "  python -m mani_skill.utils.download_asset ycb"
             )
-        all_ids = [k for k in load_json(info_path).keys() if k not in _YCB_EXCLUDE]
+        all_ids = [k for k in load_json(info_path) if k not in _YCB_EXCLUDE]
         self.model_ids = (
             np.array(model_ids) if model_ids is not None else np.array(all_ids)
         )
 
-    def build_actor(self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None) -> Actor:
+    def build_actor(
+        self, env, env_idx: int, rng: np.random.RandomState, name: str | None = None
+    ) -> Actor:
         from mani_skill.utils.building import actors
 
         model_id = str(rng.choice(self.model_ids))
@@ -215,8 +482,8 @@ class InternDataAssetsSource(ObjectSource):
 
     def __init__(
         self,
-        categories: Optional[list[str]] = None,
-        scale: Optional[float] = None,
+        categories: list[str] | None = None,
+        scale: float | None = None,
         unit: str = "mm",
     ):
         """
@@ -254,7 +521,7 @@ class InternDataAssetsSource(ObjectSource):
         return self.CACHE_DIR / "manifest" / f"{category}.json"
 
     @staticmethod
-    def _read_json_list(path: Path) -> Optional[list[str]]:
+    def _read_json_list(path: Path) -> list[str] | None:
         """Return the JSON list in ``path``, or None if missing/corrupt/empty.
 
         Corrupt files (e.g. a manifest left empty by an interrupted write or a
@@ -310,7 +577,7 @@ class InternDataAssetsSource(ObjectSource):
         # No valid cache: try the HF tree API, and fall back to scanning the
         # local cache dir if that fails (e.g. offline machine with
         # pre-downloaded assets). Either way, rebuild the manifest.
-        ids: Optional[list[str]] = None
+        ids: list[str] | None = None
         try:
             from huggingface_hub.hf_api import RepoFolder
 
@@ -351,7 +618,7 @@ class InternDataAssetsSource(ObjectSource):
         if cached is not None:
             return cached
 
-        cats: Optional[list[str]] = None
+        cats: list[str] | None = None
         try:
             from huggingface_hub.hf_api import RepoFolder
 
@@ -466,7 +733,9 @@ class InternDataAssetsSource(ObjectSource):
         return self.unit_scale
 
     # -- build --------------------------------------------------------------- #
-    def build_actor(self, env, env_idx: int, rng: np.random.RandomState, name: Optional[str] = None) -> Actor:
+    def build_actor(
+        self, env, env_idx: int, rng: np.random.RandomState, name: str | None = None
+    ) -> Actor:
         categories = self._list_categories()
         category = str(rng.choice(np.array(categories)))
         instances = self._list_category_instances(category)

@@ -48,15 +48,19 @@ class Piper(BaseAgent):
         "joint7",
         "joint8",
     ]
-    ee_link_name = "piper_tcp"  # 夹爪接触点(指尖),非腕部 link6 -- 否则 push/grasp 奖励把腕部驱到目标,夹爪实际偏 0.1358m
+    ee_link_name = (
+        "piper_tcp"  # 夹爪接触点(指尖),非腕部 link6 -- 否则 push/grasp 奖励把腕部驱到目标,夹爪实际偏 0.1358m
+    )
 
     arm_stiffness = 1e2  # 对齐 Gazebo piper_gazebo_control.yaml joint p=100
-    arm_damping = 5    # 对齐 Gazebo piper_gazebo_control.yaml joint d=5
+    arm_damping = 5  # 对齐 Gazebo piper_gazebo_control.yaml joint d=5
     arm_force_limit = 100
 
     gripper_stiffness = 1e2  # 对齐 Gazebo piper_gazebo_control.yaml joint7 p=100
-    gripper_damping = 10   # 对齐 Gazebo piper_gazebo_control.yaml joint7 d=10
+    gripper_damping = 10  # 对齐 Gazebo piper_gazebo_control.yaml joint7 d=10
     gripper_force_limit = 10  # 对齐 MuJoCo finger forcerange="-10 10"
+    robodojo_gripper_stiffness = 5e2
+    robodojo_gripper_force_limit = 40
 
     @property
     def _controller_configs(self):
@@ -160,7 +164,7 @@ class Piper(BaseAgent):
         # ---------------------------------------------------------------------- #
         gripper_pd_joint_pos = PDJointPosMimicControllerConfig(
             self.gripper_joint_names,
-            lower=0.0,   # 对齐 panda: action=-1→关节0(闭合), action=1→0.035(张开)
+            lower=0.0,  # 对齐 panda: action=-1→关节0(闭合), action=1→0.035(张开)
             upper=0.035,
             stiffness=self.gripper_stiffness,
             damping=self.gripper_damping,
@@ -168,11 +172,24 @@ class Piper(BaseAgent):
             mimic={"joint8": {"joint": "joint7", "multiplier": -1.0}},
         )
 
+        robodojo_arm_pd_joint_pos = deepcopy(arm_pd_joint_pos)
+        robodojo_arm_pd_joint_pos.interpolate = True
+        robodojo_arm_pd_joint_pos.interpolation_steps = 8
+        robodojo_gripper_pd_joint_pos = deepcopy(gripper_pd_joint_pos)
+        robodojo_gripper_pd_joint_pos.stiffness = self.robodojo_gripper_stiffness
+        robodojo_gripper_pd_joint_pos.force_limit = self.robodojo_gripper_force_limit
+        robodojo_gripper_pd_joint_pos.interpolate = True
+        robodojo_gripper_pd_joint_pos.interpolation_steps = 8
+
         controller_configs = dict(
             pd_joint_delta_pos=dict(
                 arm=arm_pd_joint_delta_pos, gripper=gripper_pd_joint_pos
             ),
             pd_joint_pos=dict(arm=arm_pd_joint_pos, gripper=gripper_pd_joint_pos),
+            robodojo_pd_joint_pos=dict(
+                arm=robodojo_arm_pd_joint_pos,
+                gripper=robodojo_gripper_pd_joint_pos,
+            ),
             pd_ee_delta_pos=dict(arm=arm_pd_ee_delta_pos, gripper=gripper_pd_joint_pos),
             pd_ee_delta_pose=dict(
                 arm=arm_pd_ee_delta_pose, gripper=gripper_pd_joint_pos

@@ -3,12 +3,15 @@ from .clutter_randomizer import ClutterRandomizer, parse_clutter_spec
 from .lighting_randomizer import HDRILightingRandomizer
 from .object_randomizer import CompositeObjectRandomizer, ProceduralObjectRandomizer
 from .object_sources import (
+    ROBODOJO_ASSET_ROOT_ENV,
+    SOURCE_ALIASES,
     CubeSource,
     InternDataAssetsSource,
     ObjectSource,
-    SOURCE_ALIASES,
+    RoboDojoConvertedObjectSource,
     YCBSource,
     resolve_object_source,
+    resolve_robodojo_asset_root,
 )
 from .table_randomizer import (
     CompositeTableRandomizer,
@@ -28,8 +31,11 @@ __all__ = [
     "CubeSource",
     "YCBSource",
     "InternDataAssetsSource",
+    "RoboDojoConvertedObjectSource",
+    "ROBODOJO_ASSET_ROOT_ENV",
     "SOURCE_ALIASES",
     "resolve_object_source",
+    "resolve_robodojo_asset_root",
     "CompositeObjectRandomizer",
     "ProceduralObjectRandomizer",
     # table

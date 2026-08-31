@@ -21,6 +21,20 @@ class PDJointPosController(BaseController):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        if self.config.interpolation_steps is not None:
+            if not self.config.interpolate:
+                raise ValueError(
+                    "interpolation_steps requires interpolate=True"
+                )
+            if not 1 <= self.config.interpolation_steps <= self._sim_steps:
+                raise ValueError(
+                    "interpolation_steps must be in [1, sim steps per control]"
+                )
+        self._interpolation_steps = (
+            self._sim_steps
+            if self.config.interpolation_steps is None
+            else self.config.interpolation_steps
+        )
         self._start_qpos = torch.zeros(
             (self.scene.num_envs, self.active_joint_indices.shape[0]),
             device=self.device,
@@ -93,7 +107,9 @@ class PDJointPosController(BaseController):
                 action, self._start_qpos.shape
             ).clone()
         if self.config.interpolate:
-            self._step_size = (self._target_qpos - self._start_qpos) / self._sim_steps
+            self._step_size = (
+                self._target_qpos - self._start_qpos
+            ) / self._interpolation_steps
         else:
             self.set_drive_targets(self._target_qpos)
 
@@ -102,7 +118,8 @@ class PDJointPosController(BaseController):
 
         # Compute the next target via a linear interpolation
         if self.config.interpolate:
-            targets = self._start_qpos + self._step_size * self._step
+            interpolation_step = min(self._step, self._interpolation_steps)
+            targets = self._start_qpos + self._step_size * interpolation_step
             self.set_drive_targets(targets)
 
     def get_state(self) -> dict:
@@ -128,6 +145,13 @@ class PDJointPosControllerConfig(ControllerConfig):
     use_delta: bool = False
     use_target: bool = False
     interpolate: bool = False
+    interpolation_steps: int | None = None
+    """Number of simulation steps used for interpolation.
+
+    When smaller than the simulation steps per control step, the remaining
+    steps hold the final target. ``None`` preserves the historical behavior of
+    interpolating across the full control period.
+    """
     normalize_action: bool = True
     drive_mode: Union[Sequence[DriveMode], DriveMode] = "force"
     controller_cls = PDJointPosController
@@ -230,7 +254,9 @@ class PDJointPosMimicController(PDJointPosController):
             + self._offset[None, :]
         )
         if self.config.interpolate:
-            self._step_size = (self._target_qpos - self._start_qpos) / self._sim_steps
+            self._step_size = (
+                self._target_qpos - self._start_qpos
+            ) / self._interpolation_steps
         else:
             self.set_drive_targets(self._target_qpos)
 

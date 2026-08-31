@@ -47,11 +47,7 @@ from mani_skill.utils import sapien_utils
 from mani_skill.utils.registration import register_env
 from mani_skill.utils.structs.pose import Pose
 
-from .randomization import (
-    HDRILightingRandomizer,
-    ObjectSource,
-    Randomizer,
-)
+from .randomization import HDRILightingRandomizer, ObjectSource, Randomizer
 from .randomization.clutter_randomizer import ClutterRandomizer, parse_clutter_spec
 from .randomization.object_randomizer import CompositeObjectRandomizer
 from .randomization.table_randomizer import (
@@ -132,7 +128,7 @@ class PickAnythingEnv(BaseEnv):
         # reuse the target source pool otherwise. They are placed on the table
         # avoiding the target. "random_2_5" draws N in [2,5] per episode.
         # Orthogonal to the other axes; physical but not in state obs.
-        if clutter is None or isinstance(clutter, ClutterRandomizer):
+        if clutter is None or isinstance(clutter, Randomizer):
             self.clutter_randomizer = clutter
         else:
             spec = parse_clutter_spec(clutter)  # (lo, hi) or None

@@ -18,9 +18,15 @@ import numpy as np
 import torch
 
 import mani_skill.envs  # noqa: F401
-from mani_skill.envs.tasks.pick_anything.episode_specs import EpisodeSpec
+from mani_skill.envs.tasks.pick_anything.episode_specs import (
+    EpisodeSpec,
+    load_episode_specs_manifest,
+)
+from mani_skill.examples.motionplanning.piper.grasping.contracts import (
+    GraspProviderName,
+    PipelineName,
+)
 from mani_skill.examples.motionplanning.piper.solutions.lift_anything import solve
-
 
 CAMERA_UIDS = ("base_camera", "wrist_camera", "side_camera")
 PROMPT = "pick up the object"
@@ -39,7 +45,9 @@ def _first_matrix(value: Any, shape: tuple[int, int]) -> np.ndarray:
         return array
     if array.shape == (1, *shape):
         return array[0]
-    raise ValueError(f"Expected matrix shape {shape} or {(1, *shape)}, got {array.shape}")
+    raise ValueError(
+        f"Expected matrix shape {shape} or {(1, *shape)}, got {array.shape}"
+    )
 
 
 def projected_bbox_size(
@@ -52,9 +60,13 @@ def projected_bbox_size(
     intrinsic = np.asarray(intrinsic_cv, dtype=np.float64)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError(f"world_points must have shape (N, 3), got {points.shape}")
-    camera = (extrinsic @ np.concatenate([points, np.ones((len(points), 1))], axis=1).T).T
+    camera = (
+        extrinsic @ np.concatenate([points, np.ones((len(points), 1))], axis=1).T
+    ).T
     if np.any(camera[:, 2] <= 0.0):
-        raise RuntimeError("spawn-invalid: object OBB crosses or is behind camera plane")
+        raise RuntimeError(
+            "spawn-invalid: object OBB crosses or is behind camera plane"
+        )
     pixels_h = (intrinsic @ camera.T).T
     pixels = pixels_h[:, :2] / pixels_h[:, 2:3]
     size = pixels.max(axis=0) - pixels.min(axis=0)
@@ -66,12 +78,8 @@ def validate_camera_visibility(base_env) -> dict[str, tuple[float, float]]:
     if mesh is None:
         raise RuntimeError("spawn-invalid: object has no collision mesh")
     corners = np.asarray(mesh.bounding_box.vertices, dtype=np.float64)
-    actor_matrix = _first_matrix(
-        base_env.obj.pose.to_transformation_matrix(), (4, 4)
-    )
-    world_points = (
-        actor_matrix[:3, :3] @ corners.T + actor_matrix[:3, 3:4]
-    ).T
+    actor_matrix = _first_matrix(base_env.obj.pose.to_transformation_matrix(), (4, 4))
+    world_points = (actor_matrix[:3, :3] @ corners.T + actor_matrix[:3, 3:4]).T
     params = base_env.get_sensor_params()
     sizes = {}
     for camera_uid in ("base_camera", "side_camera"):
@@ -151,6 +159,9 @@ class AttemptResult:
     max_lift_height: float
     shard_path: str | None
     shard_sha256: str | None
+    provider: str = GraspProviderName.OBB.value
+    pipeline: str = PipelineName.LEGACY.value
+    candidate_evaluations: tuple[dict[str, Any], ...] = ()
 
 
 def _write_episode(
@@ -165,13 +176,25 @@ def _write_episode(
     if final_path.exists():
         raise FileExistsError(final_path)
     arrays = {
-        "observation.images.front": np.stack([frame["images"]["base_camera"] for frame in frames]),
-        "observation.images.wrist": np.stack([frame["images"]["wrist_camera"] for frame in frames]),
-        "observation.images.side": np.stack([frame["images"]["side_camera"] for frame in frames]),
+        "observation.images.front": np.stack(
+            [frame["images"]["base_camera"] for frame in frames]
+        ),
+        "observation.images.wrist": np.stack(
+            [frame["images"]["wrist_camera"] for frame in frames]
+        ),
+        "observation.images.side": np.stack(
+            [frame["images"]["side_camera"] for frame in frames]
+        ),
         "observation.state": np.stack([frame["state"] for frame in frames]),
-        "action_command_raw": np.stack([frame["action_command_raw"] for frame in frames]),
-        "action_command_applied": np.stack([frame["action_command_applied"] for frame in frames]),
-        "expert_stage": np.asarray([frame["expert_stage"] for frame in frames], dtype="U16"),
+        "action_command_raw": np.stack(
+            [frame["action_command_raw"] for frame in frames]
+        ),
+        "action_command_applied": np.stack(
+            [frame["action_command_applied"] for frame in frames]
+        ),
+        "expert_stage": np.asarray(
+            [frame["expert_stage"] for frame in frames], dtype="U16"
+        ),
         "prompt": np.asarray(PROMPT),
         "episode_spec_json": np.asarray(json.dumps(spec.to_dict(), sort_keys=True)),
         "metadata_json": np.asarray(json.dumps(metadata, sort_keys=True)),
@@ -197,8 +220,15 @@ def collect_attempt(
     spec_dict: dict[str, Any],
     output_dir: str,
     render_backend: str,
+    provider: str = GraspProviderName.OBB.value,
+    pipeline: str = PipelineName.LEGACY.value,
+    grasp_cache_dir: str | None = None,
 ) -> AttemptResult:
     spec = EpisodeSpec.from_dict(spec_dict)
+    provider_name = GraspProviderName(provider)
+    pipeline_name = PipelineName(pipeline)
+    if pipeline_name is PipelineName.COMMON and spec.settled_object_state is None:
+        raise ValueError("common pipeline requires a post-settle EpisodeSpec")
     output_path = pathlib.Path(output_dir)
     env = gym.make(
         "LiftAnythingPiper-v1",
@@ -207,12 +237,22 @@ def collect_attempt(
         control_mode="pd_joint_pos",
         sim_backend="physx_cpu",
         num_envs=1,
-        max_episode_steps=100,
+        max_episode_steps=160 if pipeline_name is PipelineName.COMMON else 100,
         render_backend=render_backend,
+        success_streak_steps=10 if pipeline_name is PipelineName.COMMON else 3,
     )
     recorder = StrictEpisodeRecorder(env)
     try:
-        result = solve(recorder, seed=spec.environment_seed)
+        result = solve(
+            recorder,
+            seed=spec.environment_seed,
+            provider=provider_name,
+            pipeline=pipeline_name,
+            grasp_cache_dir=(
+                None if grasp_cache_dir is None else pathlib.Path(grasp_cache_dir)
+            ),
+        )
+        evaluations = tuple(item.to_dict() for item in result.evaluations)
         if not result.success:
             return AttemptResult(
                 spec.stable_episode_id,
@@ -225,9 +265,14 @@ def collect_attempt(
                 recorder.max_lift_height,
                 None,
                 None,
+                provider_name.value,
+                pipeline_name.value,
+                evaluations,
             )
         raw = np.stack([frame["action_command_raw"] for frame in recorder.frames])
-        applied = np.stack([frame["action_command_applied"] for frame in recorder.frames])
+        applied = np.stack(
+            [frame["action_command_applied"] for frame in recorder.frames]
+        )
         if not np.array_equal(raw, applied):
             raise ValueError("Accepted trajectory depends on controller clipping")
         metadata = {
@@ -240,6 +285,9 @@ def collect_attempt(
             "prompt": PROMPT,
             "camera_contract": "piper_sim_camera_v1",
             "control_mode": "pd_joint_pos",
+            "provider": provider_name.value,
+            "pipeline": pipeline_name.value,
+            "candidate_evaluations": evaluations,
         }
         shard_path, digest = _write_episode(
             output_path, spec, recorder.frames, metadata
@@ -255,6 +303,9 @@ def collect_attempt(
             recorder.max_lift_height,
             str(shard_path),
             digest,
+            provider_name.value,
+            pipeline_name.value,
+            evaluations,
         )
     except Exception as error:
         return AttemptResult(
@@ -268,19 +319,20 @@ def collect_attempt(
             recorder.max_lift_height,
             None,
             None,
+            provider_name.value,
+            pipeline_name.value,
+            (),
         )
     finally:
         recorder.close()
 
 
-def load_specs(path: pathlib.Path) -> list[EpisodeSpec]:
-    payload = json.loads(path.read_text())
-    rows = payload["episodes"] if isinstance(payload, dict) else payload
-    specs = [EpisodeSpec.from_dict(row) for row in rows]
-    ids = [spec.stable_episode_id for spec in specs]
-    if len(set(ids)) != len(ids):
-        raise ValueError("Episode manifest contains duplicate stable_episode_id values")
-    return specs
+def load_specs(
+    path: pathlib.Path, *, require_settled_state: bool = False
+) -> list[EpisodeSpec]:
+    return load_episode_specs_manifest(
+        path, require_settled_state=require_settled_state
+    )
 
 
 def main() -> None:
@@ -289,11 +341,34 @@ def main() -> None:
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
     parser.add_argument("--num-procs", type=int, default=32)
     parser.add_argument("--render-backends", default="cuda:0")
+    parser.add_argument(
+        "--provider",
+        choices=[item.value for item in GraspProviderName],
+        default=GraspProviderName.OBB.value,
+    )
+    parser.add_argument(
+        "--pipeline",
+        choices=[item.value for item in PipelineName],
+        default=PipelineName.LEGACY.value,
+    )
+    parser.add_argument("--grasp-cache-dir", type=pathlib.Path)
+    parser.add_argument(
+        "--require-settled-state",
+        action="store_true",
+        help="Reject legacy manifests that cannot guarantee paired post-settle replay.",
+    )
     args = parser.parse_args()
     if args.num_procs <= 0:
         raise ValueError("num-procs must be positive")
-    specs = load_specs(args.episode_manifest)
-    render_backends = tuple(item.strip() for item in args.render_backends.split(",") if item.strip())
+    specs = load_specs(
+        args.episode_manifest,
+        require_settled_state=(
+            args.require_settled_state or args.pipeline == PipelineName.COMMON.value
+        ),
+    )
+    render_backends = tuple(
+        item.strip() for item in args.render_backends.split(",") if item.strip()
+    )
     if not render_backends:
         raise ValueError("At least one render backend is required")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -308,6 +383,11 @@ def main() -> None:
                 spec_dict=spec.to_dict(),
                 output_dir=str(args.output_dir),
                 render_backend=render_backends[index % len(render_backends)],
+                provider=args.provider,
+                pipeline=args.pipeline,
+                grasp_cache_dir=(
+                    None if args.grasp_cache_dir is None else str(args.grasp_cache_dir)
+                ),
             ): spec.stable_episode_id
             for index, spec in enumerate(specs)
         }
@@ -318,9 +398,13 @@ def main() -> None:
     results.sort(key=lambda item: item.stable_episode_id)
     manifest = {
         "episode_manifest": str(args.episode_manifest),
-        "episode_manifest_sha256": hashlib.sha256(args.episode_manifest.read_bytes()).hexdigest(),
+        "episode_manifest_sha256": hashlib.sha256(
+            args.episode_manifest.read_bytes()
+        ).hexdigest(),
         "attempted": len(results),
         "accepted": sum(result.accepted for result in results),
+        "provider": args.provider,
+        "pipeline": args.pipeline,
         "results": [dataclasses.asdict(result) for result in results],
     }
     (args.output_dir / "manifest.json").write_text(

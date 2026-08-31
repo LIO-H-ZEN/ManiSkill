@@ -1,5 +1,6 @@
 import dataclasses
 import inspect
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,8 +8,14 @@ import pytest
 import torch
 
 import mani_skill.envs.tasks.pick_anything.pick_anything_env as pick_anything_module
-from mani_skill.envs.tasks.pick_anything.episode_specs import EpisodeSpec, ObjectSpec
+from mani_skill.envs.tasks.pick_anything.episode_specs import (
+    EpisodeSpec,
+    ObjectSpec,
+    SettledObjectState,
+    load_episode_specs_manifest,
+)
 from mani_skill.envs.tasks.pick_anything.lift_anything_piper import (
+    DEFAULT_OBJECT_SPAWN_HALF_SIZE,
     MAX_PLANAR_REACH,
     LiftAnythingPiperEnv,
     validate_settled_spawn,
@@ -17,11 +24,11 @@ from mani_skill.envs.tasks.pick_anything.pick_anything_env import PickAnythingEn
 from mani_skill.envs.tasks.pick_anything.randomization.clutter_randomizer import (
     ClutterRandomizer,
 )
-from mani_skill.envs.utils.randomization.batched_rng import BatchedRNG
 from mani_skill.envs.tasks.pick_anything.randomization.object_randomizer import (
     CompositeObjectRandomizer,
 )
 from mani_skill.envs.tasks.tabletop.lift_cube_piper import LIFT_HEIGHT
+from mani_skill.envs.utils.randomization.batched_rng import BatchedRNG
 from scripts.build_lift_anything_supplement import build_supplemental_specs
 from scripts.materialize_lift_anything_episode_specs import (
     _materialize,
@@ -59,6 +66,50 @@ def test_episode_spec_round_trip_and_fingerprint() -> None:
     assert restored == spec
     assert restored.fingerprint == spec.fingerprint
     assert len(spec.fingerprint) == 64
+
+
+def test_episode_spec_round_trips_optional_settled_state() -> None:
+    state = SettledObjectState(
+        position=(0.01, 0.02, 0.03),
+        quaternion=(-1.0, 0.0, 0.0, 0.0),
+        linear_velocity=(0.001, 0.0, 0.0),
+        angular_velocity=(0.0, 0.002, 0.0),
+    )
+    spec = dataclasses.replace(_episode_spec(), settled_object_state=state)
+
+    restored = EpisodeSpec.from_dict(spec.to_dict())
+
+    assert restored == spec
+    assert restored.settled_object_state.quaternion == (1.0, -0.0, -0.0, -0.0)
+    assert len(restored.settled_object_state.fingerprint) == 64
+
+
+def test_settled_state_replay_mismatch_fast_fails() -> None:
+    expected = SettledObjectState(
+        position=(0.01, 0.02, 0.03),
+        quaternion=(1.0, 0.0, 0.0, 0.0),
+        linear_velocity=(0.0, 0.0, 0.0),
+        angular_velocity=(0.0, 0.0, 0.0),
+    )
+    actual = dataclasses.replace(expected, position=(0.011, 0.02, 0.03))
+
+    with pytest.raises(RuntimeError, match="settled position"):
+        LiftAnythingPiperEnv._assert_settled_object_state(expected, actual)
+
+
+def test_benchmark_manifest_requires_settled_state(tmp_path) -> None:
+    path = tmp_path / "episodes.json"
+    path.write_text(json.dumps({"episodes": [_episode_spec().to_dict()]}))
+
+    with pytest.raises(ValueError, match="post-settle rigid-body state"):
+        load_episode_specs_manifest(path, require_settled_state=True)
+
+
+def test_legacy_manifest_remains_readable_without_settled_state(tmp_path) -> None:
+    path = tmp_path / "episodes.json"
+    path.write_text(json.dumps({"episodes": [_episode_spec().to_dict()]}))
+
+    assert load_episode_specs_manifest(path) == [_episode_spec()]
 
 
 def test_object_spec_fast_fails_invalid_source_fields() -> None:
@@ -152,13 +203,82 @@ def test_evaluate_uses_relative_settled_height_and_grasp() -> None:
     env.success_streak = torch.tensor([2, 2], dtype=torch.int32)
     env.streak_updated_at = torch.tensor([2, 2], dtype=torch.int32)
     env._elapsed_steps = torch.tensor([3, 3], dtype=torch.int32)
+    env.success_streak_steps = 3
 
     info = env.evaluate()
 
     torch.testing.assert_close(info["success"], torch.tensor([True, False]))
     torch.testing.assert_close(
+        info["legacy_success_3step"], torch.tensor([True, False])
+    )
+    torch.testing.assert_close(
+        info["robust_success_10step"], torch.tensor([False, False])
+    )
+    torch.testing.assert_close(
         info["success_streak"], torch.tensor([3, 0], dtype=torch.int32)
     )
+
+
+def test_evaluate_can_require_robust_ten_step_hold() -> None:
+    env = object.__new__(LiftAnythingPiperEnv)
+    env.object_rest_z = torch.tensor([0.04])
+    env.obj = SimpleNamespace(
+        pose=SimpleNamespace(p=torch.tensor([[0.0, 0.0, 0.04 + LIFT_HEIGHT]]))
+    )
+    env.agent = SimpleNamespace(is_grasping=lambda obj: torch.tensor([True]))
+    env.success_streak = torch.tensor([8], dtype=torch.int32)
+    env.streak_updated_at = torch.tensor([8], dtype=torch.int32)
+    env._elapsed_steps = torch.tensor([9], dtype=torch.int32)
+    env.success_streak_steps = 10
+
+    ninth = env.evaluate()
+    env._elapsed_steps = torch.tensor([10], dtype=torch.int32)
+    tenth = env.evaluate()
+
+    assert not bool(ninth["success"][0])
+    assert bool(ninth["legacy_success_3step"][0])
+    assert bool(tenth["success"][0])
+    assert bool(tenth["robust_success_10step"][0])
+
+
+def test_state_observation_exposes_privileged_target_geometry() -> None:
+    env = object.__new__(LiftAnythingPiperEnv)
+    env._obs_mode = "state"
+    env.object_rest_z = torch.tensor([0.02])
+    env.obj = SimpleNamespace(
+        pose=SimpleNamespace(
+            p=torch.tensor([[0.03, 0.01, 0.07]]),
+            raw_pose=torch.tensor([[0.03, 0.01, 0.07, 1.0, 0.0, 0.0, 0.0]]),
+        )
+    )
+    env.agent = SimpleNamespace(
+        tcp_pose=SimpleNamespace(
+            p=torch.tensor([[0.01, -0.02, 0.10]]),
+            raw_pose=torch.tensor([[0.01, -0.02, 0.10, 1.0, 0.0, 0.0, 0.0]]),
+        )
+    )
+
+    obs = env._get_obs_extra({"is_grasped": torch.tensor([True])})
+
+    assert set(obs) == {
+        "is_grasped",
+        "tcp_pose",
+        "obj_pose",
+        "tcp_to_obj_pos",
+        "object_rest_z",
+        "lift_height",
+    }
+    torch.testing.assert_close(
+        obs["tcp_to_obj_pos"], torch.tensor([[0.02, 0.03, -0.03]])
+    )
+    torch.testing.assert_close(obs["lift_height"], torch.tensor([0.05]))
+
+
+def test_visual_observation_does_not_expose_privileged_target_state() -> None:
+    env = object.__new__(LiftAnythingPiperEnv)
+    env._obs_mode = "rgb"
+
+    assert env._get_obs_extra({}) == {}
 
 
 def test_environment_is_registered_with_locked_horizon() -> None:
@@ -222,9 +342,19 @@ def test_pickanything_builds_clutter_from_independent_source_pool(monkeypatch) -
 def test_constructor_forwards_parallel_randomization_options(monkeypatch) -> None:
     captured = {}
 
+    class FakeObjectRandomizer:
+        def __init__(self, sources, **kwargs):
+            captured["object_sources"] = tuple(sources)
+            captured["spawn_half_size"] = kwargs["spawn_half_size"]
+
     def fake_init(self, *args, **kwargs):
         captured.update(kwargs)
 
+    monkeypatch.setattr(
+        "mani_skill.envs.tasks.pick_anything.lift_anything_piper."
+        "CompositeObjectRandomizer",
+        FakeObjectRandomizer,
+    )
     monkeypatch.setattr(PickAnythingEnv, "__init__", fake_init)
 
     LiftAnythingPiperEnv(
@@ -240,6 +370,7 @@ def test_constructor_forwards_parallel_randomization_options(monkeypatch) -> Non
 
     assert captured["num_envs"] == 8
     assert captured["object_sources"] == ("cube",)
+    assert captured["spawn_half_size"] == DEFAULT_OBJECT_SPAWN_HALF_SIZE
     assert captured["table_randomizer"] == "procedural"
     assert captured["floor_randomizer"] == "grid"
     assert captured["clutter"] == "random_2_5"

@@ -45,6 +45,7 @@
     <disable_collisions link1="link4" link2="link6" reason="Never"/>
     <disable_collisions link1="link4" link2="link7" reason="Never"/>
     <disable_collisions link1="link4" link2="link8" reason="Never"/>
+    <disable_collisions link1="link5" link2="gripper_base" reason="Never"/>
     <disable_collisions link1="link5" link2="link7" reason="Never"/>
     <disable_collisions link1="link5" link2="link8" reason="Never"/>
     <disable_collisions link1="link6" link2="link7" reason="Default"/>

@@ -10,3 +10,7 @@
 numpy==1.26.4
 # Keep the uv environment on the CUDA 12.6 wheel family used by the GPU workers.
 torch==2.7.1
+# Deterministic multi-convex collision proxies for PiPER/MPlib.
+coacd==1.0.13
+# Exact mesh collision queries for target-aware grasp approach validation.
+python-fcl==0.7.0.11

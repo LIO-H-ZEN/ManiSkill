@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -35,9 +36,7 @@ class _FakeEnv(gym.Env):
     def __init__(self):
         super().__init__()
         self.agent = SimpleNamespace(
-            robot=SimpleNamespace(
-                get_qpos=lambda: np.zeros((1, 8), dtype=np.float32)
-            )
+            robot=SimpleNamespace(get_qpos=lambda: np.zeros((1, 8), dtype=np.float32))
         )
 
     def reset(self, **kwargs):
@@ -64,9 +63,9 @@ def test_recorder_records_observation_before_action(monkeypatch) -> None:
     fake = _FakeEnv()
     monkeypatch.setattr(
         "scripts.collect_lift_cube_piper._to_numpy",
-        lambda value: value
-        if isinstance(value, np.ndarray)
-        else value.detach().cpu().numpy(),
+        lambda value: (
+            value if isinstance(value, np.ndarray) else value.detach().cpu().numpy()
+        ),
     )
     recorder = StrictEpisodeRecorder(fake)
     recorder.reset(seed=1)
@@ -83,9 +82,9 @@ def test_recorder_rejects_actions_that_would_be_clipped(monkeypatch) -> None:
     fake = _FakeEnv()
     monkeypatch.setattr(
         "scripts.collect_lift_cube_piper._to_numpy",
-        lambda value: value
-        if isinstance(value, np.ndarray)
-        else value.detach().cpu().numpy(),
+        lambda value: (
+            value if isinstance(value, np.ndarray) else value.detach().cpu().numpy()
+        ),
     )
     recorder = StrictEpisodeRecorder(fake)
     recorder.reset(seed=1)
@@ -99,10 +98,60 @@ def test_solver_boolean_conversion_is_scalar() -> None:
     assert not PiperMotionPlanningSolver._as_bool(np.array([False]))
 
 
-def test_planning_urdf_removes_non_kinematic_geometry(tmp_path) -> None:
+def test_follow_path_rejects_joint_limit_violation_before_stepping() -> None:
+    class NeverStepEnv:
+        def step(self, action):
+            raise AssertionError(f"invalid path reached env.step: {action}")
+
+    qlimits = torch.tensor(
+        [
+            [
+                [-2.618, 2.618],
+                [0.0, 3.14],
+                [-2.967, 0.0],
+                [-1.745, 1.745],
+                [-1.22, 1.22],
+                [-2.0944, 2.0944],
+                [0.0, 0.035],
+                [-0.035, 0.0],
+            ]
+        ],
+        dtype=torch.float32,
+    )
+    solver = object.__new__(PiperMotionPlanningSolver)
+    solver.robot = SimpleNamespace(get_qlimits=lambda: qlimits)
+    solver.env = NeverStepEnv()
+    solver.execution_stage = "lift"
+    solver.episode_done = False
+    solver.last_transition = None
+    solver.waypoint_validator = None
+    solver.print_env_info = False
+    solver.vis = False
+    solver.gripper_state = -1.0
+    result = {
+        "position": np.array(
+            [
+                [
+                    -0.34731367,
+                    1.5157384,
+                    -1.2022141,
+                    -0.04970372,
+                    1.2235266,
+                    0.9708683,
+                ]
+            ]
+        )
+    }
+
+    with pytest.raises(RuntimeError, match="lift: joint-limit-joint5"):
+        solver.follow_path(result)
+
+
+def test_planning_urdf_preserves_collision_and_removes_render_geometry(
+    tmp_path,
+) -> None:
     source = tmp_path / "robot.urdf"
-    source.write_text(
-        """<?xml version="1.0"?>
+    source.write_text("""<?xml version="1.0"?>
 <robot name="test">
   <link name="base">
     <inertial><mass value="1"/><inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/></inertial>
@@ -110,15 +159,15 @@ def test_planning_urdf_removes_non_kinematic_geometry(tmp_path) -> None:
     <collision><geometry><box size="1 1 1"/></geometry></collision>
   </link>
 </robot>
-"""
-    )
+""")
+    source.with_suffix(".srdf").write_text('<robot name="test"/>')
 
     generated = PiperMotionPlanningSolver._build_kinematic_planning_urdf(str(source))
     root = ET.parse(generated).getroot()
 
     assert root.find(".//inertial") is None
     assert root.find(".//visual") is None
-    assert root.find(".//collision") is None
+    assert root.find(".//collision") is not None
     assert root.find("./link").attrib["name"] == "base"
 
 
@@ -130,6 +179,74 @@ def test_planning_targets_are_converted_to_robot_base_frame() -> None:
     transformed = solver._transform_pose_for_planning(target)
 
     np.testing.assert_allclose(transformed.p, [0.38, 0.02, 0.08], atol=1e-6)
+
+
+def test_collision_point_cloud_is_converted_to_robot_base_frame() -> None:
+    solver = object.__new__(PiperMotionPlanningSolver)
+    solver.base_pose = sapien.Pose([-0.35, 0.0, 0.0])
+    recorded = {}
+    solver.planner = SimpleNamespace(
+        update_point_cloud=lambda points, radius: recorded.update(
+            points=points, radius=radius
+        )
+    )
+
+    solver.set_collision_point_cloud(np.array([[0.0, 0.0, 0.0]]), radius=0.004)
+
+    np.testing.assert_allclose(recorded["points"], [[0.35, 0.0, 0.0]])
+    assert recorded["radius"] == 0.004
+
+
+def test_piper_collision_proxy_supports_self_collision_queries() -> None:
+    import mplib
+
+    source = Path("mani_skill/assets/robots/piper/piper_description.urdf")
+    generated = PiperMotionPlanningSolver._build_collision_planning_urdf(str(source))
+    generated_root = ET.parse(generated).getroot()
+    collision_counts = {
+        link.attrib["name"]: len(link.findall("collision"))
+        for link in generated_root.findall("link")
+    }
+    assert collision_counts["gripper_base"] > 1
+    assert collision_counts["link7"] > 1
+    assert collision_counts["link8"] > 1
+    assert not any(
+        ".repaired." in mesh.attrib["filename"]
+        for mesh in generated_root.findall(".//collision/geometry/mesh")
+    )
+    links = [
+        "base_link",
+        "link1",
+        "link2",
+        "link3",
+        "link4",
+        "link5",
+        "link6",
+        "gripper_base",
+        "link7",
+        "link8",
+        "piper_tcp",
+    ]
+    joints = [f"joint{index}" for index in range(1, 9)]
+    planner = mplib.Planner(
+        urdf=str(generated),
+        srdf=str(source.with_suffix(".srdf")),
+        user_link_names=links,
+        user_joint_names=joints,
+        move_group="piper_tcp",
+    )
+
+    safe = np.array([0.0, 1.57, -1.3485, 0.0, 0.0, 0.0, 0.035, -0.035])
+    colliding = np.array(
+        [-2.5304, 1.5498, -0.0843, -0.7861, 0.6057, -0.3593, 0.0073, -0.0033]
+    )
+
+    assert planner.check_for_self_collision(qpos=safe) == []
+    collision_pairs = {
+        (item.link_name1, item.link_name2)
+        for item in planner.check_for_self_collision(qpos=colliding)
+    }
+    assert ("base_link", "gripper_base") in collision_pairs
 
 
 def test_joint_target_validation_rejects_wrong_shape() -> None:
@@ -207,7 +324,7 @@ def test_liftanything_candidates_are_bounded_and_width_feasible() -> None:
 
     assert obj.requested_world_frame is False
     assert len(candidates) == MAX_GRASP_CANDIDATES
-    assert all(candidate.required_width <= 0.07 for candidate in candidates)
+    assert all(candidate.required_width <= 0.068 for candidate in candidates)
     assert len({candidate.candidate_id for candidate in candidates}) == len(candidates)
 
 
@@ -216,6 +333,15 @@ def test_liftanything_candidates_reject_width_infeasible_object() -> None:
         generate_grasp_candidates(
             _AnythingAgent(),
             _Object([0.08, 0.09, 0.04]),
+            np.array([-0.35, 0.0, 0.0]),
+        )
+
+
+def test_liftanything_candidates_reject_width_above_executable_contract() -> None:
+    with pytest.raises(RuntimeError, match="width-infeasible"):
+        generate_grasp_candidates(
+            _AnythingAgent(),
+            _Object([0.069, 0.09, 0.04]),
             np.array([-0.35, 0.0, 0.0]),
         )
 
